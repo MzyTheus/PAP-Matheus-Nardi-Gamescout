@@ -475,6 +475,15 @@ async def update_me(payload: ProfileUpdateIn, user: dict = Depends(get_current_u
     return out
 
 
+@api.get("/users/search")
+async def search_users(q: str = Query(min_length=2), user: dict = Depends(get_current_user)):
+    cur = db.users.find(
+        {"name": {"$regex": q, "$options": "i"}, "user_id": {"$ne": user["user_id"]}},
+        {"_id": 0, "password_hash": 0, "email": 0},
+    ).limit(20)
+    return [public_user(u) async for u in cur]
+
+
 @api.get("/users/{user_id}")
 async def get_user_public(user_id: str):
     u = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0, "email": 0})
@@ -815,15 +824,6 @@ async def accept_friend(user_id: str, user: dict = Depends(get_current_user)):
     if res.matched_count == 0:
         raise HTTPException(404, "Pedido não encontrado")
     return {"ok": True}
-
-
-@api.get("/users/search")
-async def search_users(q: str = Query(min_length=2), user: dict = Depends(get_current_user)):
-    cur = db.users.find(
-        {"name": {"$regex": q, "$options": "i"}, "user_id": {"$ne": user["user_id"]}},
-        {"_id": 0, "password_hash": 0, "email": 0},
-    ).limit(20)
-    return [public_user(u) async for u in cur]
 
 
 # ---------------------------------------------------------------------------
