@@ -24,7 +24,16 @@ Plataforma social de jogos com:
 - Frontend: React Router, AuthContext, Tailwind theme (orange/black-white), Unbounded/Manrope/JetBrains Mono fonts, Shadcn UI
 - All MongoDB queries exclude `_id`. Users use UUID `user_id` field.
 
-## Implemented (2026-05-06)
+## Implemented (2026-05-06 — iteração 3)
+- ✅ Catálogo aumentado para **500 jogos** (10 queries IGDB diversificadas: top all-time, populares recentes, hyped, géneros específicos)
+- ✅ **Re-importação automática a cada 7 dias** via background loop (configurável em `IGDB_REFRESH_HOURS`)
+- ✅ **Página Descobrir** (`/descobrir`) com 4 secções: Para o teu gosto, Nas tuas plataformas, Joias escondidas, Em alta — usa avaliações + jogo favorito + plataformas do utilizador
+- ✅ **Picker de jogo favorito** com autocomplete real-time contra o catálogo (`GamePicker` component) — só permite jogos válidos
+- ✅ **Bug fix: botão de amizade**: GET `/users/{id}` agora devolve `friendship_status` (self/none/pending_sent/pending_received/accepted) → Profile mostra "Amigos"/"Pedido enviado"/"Aceitar"/"Adicionar"
+- ✅ **Bug fix: foto de perfil cached**: helper `cacheBust(url, version)` adiciona `?v=` aos avatares; PATCH /users/me também propaga (`name, picture`) para reviews/guides/help_requests denormalizados
+- ✅ **Novo formato de ID**: `U{ano}{LETRA}{4 alfanuméricos}` (ex: `U2026O7I5O`) para novos utilizadores; mostrado como `@U2026O7I5O`
+- ✅ **Site totalmente em PT-PT** incluindo **descrições dos jogos** traduzidas via Claude Sonnet 4.5 (Emergent LLM key) — inserção imediata + tradução em background batch
+- ✅ Indexes adicionados em `games.genres/platforms/rating/year` para queries rápidas
 - ✅ Auth: register, login, logout, /me, /me/full, refresh, Google session exchange
 - ✅ Profile CRUD: bio, social links (Discord/TikTok/Insta/Twitch), prefs (favorite_game, platforms, pc_specs)
 - ✅ **IGDB importer** — fetches 150–200 jogos populares + recentes na inicialização (replaces seed); endpoint admin `POST /api/admin/games/refresh` para re-importar

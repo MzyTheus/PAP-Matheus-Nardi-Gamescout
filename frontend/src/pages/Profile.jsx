@@ -7,7 +7,8 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth-context";
 import { PLATFORM_LABEL } from "@/lib/game-data";
-import { Settings, UserPlus, MessageSquare, Gamepad2, Cpu, Star } from "lucide-react";
+import { handleOf, cacheBust } from "@/lib/format";
+import { Settings, UserPlus, MessageSquare, Gamepad2, Cpu, Clock, Check, X, Star } from "lucide-react";
 import { toast } from "sonner";
 
 const SOCIAL_ICONS = {
@@ -22,36 +23,64 @@ export default function Profile() {
   const { user: me } = useAuth();
   const [profile, setProfile] = useState(null);
   const [reviews, setReviews] = useState([]);
+  const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
+  const load = () => {
     api.get(`/users/${userId}`).then((r) => setProfile(r.data)).catch(() => setProfile(null));
     api.get(`/users/${userId}/reviews`).then((r) => setReviews(r.data));
-  }, [userId]);
+  };
+  useEffect(load, [userId]);
 
   const isMe = me?.user_id === userId;
+  const status = profile?.friendship_status || "none";
 
   const sendFriendRequest = async () => {
+    setBusy(true);
     try {
       await api.post(`/friends/request/${userId}`);
       toast.success("Pedido de amizade enviado");
-    } catch (e) {
-      toast.error(e.response?.data?.detail || "Erro");
-    }
+      load();
+    } catch (e) { toast.error(e.response?.data?.detail || "Erro"); }
+    finally { setBusy(false); }
+  };
+
+  const acceptFriend = async () => {
+    setBusy(true);
+    try {
+      await api.post(`/friends/accept/${userId}`);
+      toast.success("Amizade aceite");
+      load();
+    } catch (e) { toast.error(e.response?.data?.detail || "Erro"); }
+    finally { setBusy(false); }
   };
 
   if (!profile) return <div className="font-mono text-sm text-muted-foreground py-20 text-center tracking-wider">A CARREGAR…</div>;
+
+  const fav = profile.prefs?.favorite_game_doc;
+  const picVersion = profile.picture || "";
+  const avatarSrc = profile.picture ? cacheBust(profile.picture, picVersion.length) : null;
+
+  let actionBtn = null;
+  if (isMe) {
+    actionBtn = <Button asChild variant="outline" data-testid="profile-edit-btn" className="rounded-sm font-mono uppercase tracking-wider"><Link to="/perfil/editar"><Settings size={14} className="mr-2"/> Editar</Link></Button>;
+  } else if (me) {
+    if (status === "accepted") actionBtn = <span data-testid="profile-status-friends" className="inline-flex items-center gap-2 px-3 py-2 rounded-sm border border-green-500/40 bg-green-500/10 text-green-500 font-mono text-xs uppercase tracking-wider"><Check size={14}/> Amigos</span>;
+    else if (status === "pending_sent") actionBtn = <span data-testid="profile-status-pending" className="inline-flex items-center gap-2 px-3 py-2 rounded-sm border border-border text-muted-foreground font-mono text-xs uppercase tracking-wider"><Clock size={14}/> Pedido enviado</span>;
+    else if (status === "pending_received") actionBtn = <Button data-testid="profile-accept-btn" disabled={busy} onClick={acceptFriend} className="rounded-sm font-mono uppercase tracking-wider"><Check size={14} className="mr-2"/> Aceitar pedido</Button>;
+    else actionBtn = <Button data-testid="profile-add-friend" disabled={busy} onClick={sendFriendRequest} className="rounded-sm font-mono uppercase tracking-wider"><UserPlus size={14} className="mr-2"/> Adicionar amigo</Button>;
+  }
 
   return (
     <div className="space-y-8">
       <header className="grid md:grid-cols-[auto_1fr_auto] gap-6 items-start gs-card p-6">
         <Avatar className="h-24 w-24 rounded-sm border-2 border-primary">
-          <AvatarImage src={profile.picture} />
+          <AvatarImage src={avatarSrc} key={avatarSrc} />
           <AvatarFallback className="rounded-sm bg-primary text-primary-foreground font-mono text-2xl">{(profile.name || "U").slice(0, 2).toUpperCase()}</AvatarFallback>
         </Avatar>
 
         <div className="space-y-3">
           <div>
-            <div className="gs-overline">@{profile.user_id}</div>
+            <div className="gs-overline">{handleOf(profile.user_id)}</div>
             <h1 className="font-heading font-black text-3xl uppercase tracking-tight mt-1">{profile.name}</h1>
           </div>
           {profile.bio && <p className="text-sm text-foreground/80 leading-relaxed max-w-2xl">{profile.bio}</p>}
@@ -62,19 +91,21 @@ export default function Profile() {
           </div>
         </div>
 
-        <div className="flex flex-col gap-2">
-          {isMe ? (
-            <Button asChild variant="outline" data-testid="profile-edit-btn" className="rounded-sm font-mono uppercase tracking-wider"><Link to="/perfil/editar"><Settings size={14} className="mr-2"/> Editar</Link></Button>
-          ) : me ? (
-            <Button data-testid="profile-add-friend" onClick={sendFriendRequest} className="rounded-sm font-mono uppercase tracking-wider"><UserPlus size={14} className="mr-2"/> Adicionar</Button>
-          ) : null}
-        </div>
+        <div className="flex flex-col gap-2">{actionBtn}</div>
       </header>
 
       <div className="grid md:grid-cols-3 gap-4">
         <div className="gs-card p-5 space-y-3">
           <div className="flex items-center gap-2"><Gamepad2 size={16} className="text-primary"/><div className="font-mono text-xs uppercase tracking-widest text-muted-foreground">Preferências</div></div>
-          {profile.prefs?.favorite_game ? (
+          {fav ? (
+            <Link to={`/jogos/${fav.game_id}`} className="flex items-center gap-3 group">
+              <img src={fav.cover} alt="" className="w-10 h-12 object-cover rounded-sm" />
+              <div>
+                <div className="text-xs text-muted-foreground">Jogo favorito</div>
+                <div className="font-medium group-hover:text-primary transition-colors">{fav.title}</div>
+              </div>
+            </Link>
+          ) : profile.prefs?.favorite_game ? (
             <div><div className="text-xs text-muted-foreground">Jogo favorito</div><div className="font-medium">{profile.prefs.favorite_game}</div></div>
           ) : (
             <div className="font-mono text-xs text-muted-foreground">Sem jogo favorito</div>

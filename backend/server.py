@@ -56,6 +56,7 @@ class SocialLinks(BaseModel):
 
 class GamePref(BaseModel):
     favorite_game: Optional[str] = None
+    favorite_game_id: Optional[str] = None
     platforms: List[str] = []
     pc_specs: Optional[str] = None
 
@@ -259,6 +260,61 @@ app = FastAPI(title="GameScout API")
 api = APIRouter(prefix="/api")
 
 
+def gen_user_id() -> str:
+    """Format: U{year}{LETTER}{4-alnum}, e.g. U2026M4X92."""
+    import random, string
+    year = datetime.now(timezone.utc).year
+    letter = random.choice(string.ascii_uppercase)
+    suffix = "".join(random.choices(string.ascii_uppercase + string.digits, k=4))
+    return f"U{year}{letter}{suffix}"
+
+
+async def propagate_user_changes(user_id: str, fields: dict):
+    """Keep denormalized user info in reviews/guides/help in sync."""
+    name = fields.get("name")
+    pic = fields.get("picture")
+    rev_set = {}
+    if name is not None: rev_set["user_name"] = name
+    if pic is not None: rev_set["user_picture"] = pic
+    if rev_set:
+        await db.reviews.update_many({"user_id": user_id}, {"$set": rev_set})
+    g_set = {}
+    if name is not None: g_set["author_name"] = name
+    if pic is not None: g_set["author_picture"] = pic
+    if g_set:
+        await db.guides.update_many({"author_id": user_id}, {"$set": g_set})
+        await db.help_requests.update_many({"author_id": user_id}, {"$set": g_set})
+        # replies inside help_requests
+        h_set = {}
+        if name is not None: h_set["replies.$[r].author_name"] = name
+        if pic is not None: h_set["replies.$[r].author_picture"] = pic
+        if h_set:
+            await db.help_requests.update_many(
+                {"replies.author_id": user_id},
+                {"$set": h_set},
+                array_filters=[{"r.author_id": user_id}],
+            )
+
+
+async def get_friendship_status(viewer_id: str, target_id: str) -> str:
+    """Returns: 'self' | 'accepted' | 'pending_sent' | 'pending_received' | 'none'."""
+    if viewer_id == target_id:
+        return "self"
+    f = await db.friendships.find_one({
+        "$or": [
+            {"from_user": viewer_id, "to_user": target_id},
+            {"from_user": target_id, "to_user": viewer_id},
+        ]
+    }, {"_id": 0})
+    if not f:
+        return "none"
+    if f.get("status") == "accepted":
+        return "accepted"
+    if f["from_user"] == viewer_id:
+        return "pending_sent"
+    return "pending_received"
+
+
 @app.on_event("startup")
 async def startup():
     # Indexes
@@ -266,6 +322,10 @@ async def startup():
     await db.users.create_index("user_id", unique=True)
     await db.user_sessions.create_index("session_token", unique=True)
     await db.games.create_index("game_id", unique=True)
+    await db.games.create_index("genres")
+    await db.games.create_index("platforms")
+    await db.games.create_index("rating")
+    await db.games.create_index("year")
     await db.reviews.create_index([("game_id", 1), ("user_id", 1)], unique=True)
     await db.guides.create_index("game_id")
     await db.help_requests.create_index("created_at")
@@ -278,7 +338,7 @@ async def startup():
     existing = await db.users.find_one({"email": admin_email})
     if not existing:
         await db.users.insert_one({
-            "user_id": f"user_{uuid.uuid4().hex[:12]}",
+            "user_id": gen_user_id(),
             "email": admin_email,
             "name": "Admin",
             "password_hash": hash_password(admin_password),
@@ -295,14 +355,15 @@ async def startup():
     elif not verify_password(admin_password, existing.get("password_hash", "")):
         await db.users.update_one({"email": admin_email}, {"$set": {"password_hash": hash_password(admin_password)}})
 
-    # Game catalog: import from IGDB (replaces previous catalog) — fallback to seed if it fails
+    # Game catalog: import from IGDB on startup, then schedule periodic refresh
     asyncio.create_task(_refresh_games_catalog())
+    asyncio.create_task(_periodic_refresh_loop())
 
 
 async def _refresh_games_catalog():
     cid = os.environ.get("TWITCH_CLIENT_ID")
     cs = os.environ.get("TWITCH_CLIENT_SECRET")
-    limit = int(os.environ.get("IGDB_IMPORT_LIMIT", "200"))
+    limit = int(os.environ.get("IGDB_IMPORT_LIMIT", "500"))
     existing = await db.games.count_documents({})
     if not cid or not cs:
         log.warning("IGDB credentials missing — falling back to local seed (%d games)", len(GAMES_SEED))
@@ -315,14 +376,62 @@ async def _refresh_games_catalog():
         games = await loop.run_in_executor(None, igdb_mod.fetch_games, cid, cs, limit)
         if not games:
             raise RuntimeError("IGDB returned no games")
+        # Save games with English descriptions immediately
         await db.games.delete_many({})
-        await db.games.insert_many(games)
-        log.info("IGDB import complete: %d games", len(games))
+        await db.games.insert_many([{**g} for g in games])
+        await db.meta.update_one({"_id": "games"}, {"$set": {"last_imported_at": datetime.now(timezone.utc).isoformat(), "count": len(games)}}, upsert=True)
+        log.info("IGDB import complete: %d games (descriptions in EN; translation queued)", len(games))
+        # Translate in background, updating each game as it goes
+        asyncio.create_task(_translate_pending_descriptions())
     except Exception as e:
         log.error("IGDB import failed: %s — keeping existing %d games", e, existing)
         if existing == 0:
             for g in GAMES_SEED:
                 await db.games.update_one({"game_id": g["game_id"]}, {"$setOnInsert": g}, upsert=True)
+
+
+async def _translate_pending_descriptions():
+    """Translate games whose `description` still equals `description_en`. Runs in a worker thread to avoid blocking the event loop."""
+    if not os.environ.get("EMERGENT_LLM_KEY"):
+        return
+    cur = db.games.find(
+        {"$expr": {"$eq": ["$description", "$description_en"]}, "description_en": {"$ne": ""}},
+        {"_id": 0, "game_id": 1, "title": 1, "description_en": 1},
+    )
+    pending = [g async for g in cur]
+    if not pending:
+        log.info("Translation: nothing pending")
+        return
+    log.info("Translation: %d games to translate", len(pending))
+    BATCH = 10
+    for i in range(0, len(pending), BATCH):
+        chunk = pending[i:i + BATCH]
+        # Translate in a separate thread so the event loop stays responsive
+        def _do_chunk(c=chunk):
+            import asyncio as _a
+            loop = _a.new_event_loop()
+            try:
+                loop.run_until_complete(igdb_mod.translate_descriptions_batch(c, batch_size=BATCH))
+            finally:
+                loop.close()
+        await asyncio.get_running_loop().run_in_executor(None, _do_chunk)
+        for g in chunk:
+            new_desc = g.get("description")
+            if new_desc and new_desc != g.get("description_en"):
+                await db.games.update_one({"game_id": g["game_id"]}, {"$set": {"description": new_desc}})
+        log.info("Translation progress: %d/%d", min(i + BATCH, len(pending)), len(pending))
+        await asyncio.sleep(0.3)
+    log.info("Translation finished")
+
+
+async def _periodic_refresh_loop():
+    """Re-import IGDB catalog every IGDB_REFRESH_HOURS (default 168h = 7 days)."""
+    interval_h = int(os.environ.get("IGDB_REFRESH_HOURS", "168"))
+    interval_s = max(3600, interval_h * 3600)
+    while True:
+        await asyncio.sleep(interval_s)
+        log.info("Periodic IGDB refresh triggered (every %dh)", interval_h)
+        await _refresh_games_catalog()
 
 
 @api.post("/admin/games/refresh")
@@ -347,7 +456,7 @@ async def register(payload: RegisterIn, response: Response):
     email = payload.email.lower()
     if await db.users.find_one({"email": email}):
         raise HTTPException(400, "Email já registado")
-    user_id = f"user_{uuid.uuid4().hex[:12]}"
+    user_id = gen_user_id()
     doc = {
         "user_id": user_id,
         "email": email,
@@ -359,7 +468,7 @@ async def register(payload: RegisterIn, response: Response):
         "picture": None,
         "auth_provider": "email",
         "social": {},
-        "prefs": {"platforms": [], "favorite_game": None, "pc_specs": None},
+        "prefs": {"platforms": [], "favorite_game": None, "favorite_game_id": None, "pc_specs": None},
         "created_at": datetime.now(timezone.utc),
     }
     await db.users.insert_one(doc)
@@ -448,7 +557,7 @@ async def google_session(payload: GoogleSessionIn, response: Response):
 
     user = await db.users.find_one({"email": email})
     if not user:
-        user_id = f"user_{uuid.uuid4().hex[:12]}"
+        user_id = gen_user_id()
         await db.users.insert_one({
             "user_id": user_id,
             "email": email,
@@ -459,7 +568,7 @@ async def google_session(payload: GoogleSessionIn, response: Response):
             "bio": "",
             "auth_provider": "google",
             "social": {},
-            "prefs": {"platforms": [], "favorite_game": None, "pc_specs": None},
+            "prefs": {"platforms": [], "favorite_game": None, "favorite_game_id": None, "pc_specs": None},
             "created_at": datetime.now(timezone.utc),
         })
         user = await db.users.find_one({"email": email}, {"_id": 0, "password_hash": 0})
@@ -504,6 +613,7 @@ async def update_me(payload: ProfileUpdateIn, user: dict = Depends(get_current_u
     if payload.prefs is not None: update["prefs"] = payload.prefs.model_dump()
     if update:
         await db.users.update_one({"user_id": user["user_id"]}, {"$set": update})
+        await propagate_user_changes(user["user_id"], update)
     fresh = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password_hash": 0})
     out = public_user(fresh)
     out["rank"] = rank_for_points(out.get("points", 0))
@@ -520,7 +630,7 @@ async def search_users(q: str = Query(min_length=2), user: dict = Depends(get_cu
 
 
 @api.get("/users/{user_id}")
-async def get_user_public(user_id: str):
+async def get_user_public(user_id: str, request: Request):
     u = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0, "email": 0})
     if not u:
         raise HTTPException(404, "Utilizador não encontrado")
@@ -529,7 +639,96 @@ async def get_user_public(user_id: str):
     review_count = await db.reviews.count_documents({"user_id": user_id})
     guide_count = await db.guides.count_documents({"author_id": user_id})
     out["stats"] = {"reviews": review_count, "guides": guide_count}
+    fav_id = (out.get("prefs") or {}).get("favorite_game_id")
+    if fav_id:
+        g = await db.games.find_one({"game_id": fav_id}, {"_id": 0, "title": 1, "cover": 1, "game_id": 1})
+        if g:
+            out["prefs"]["favorite_game_doc"] = g
+    viewer = await get_current_user_optional(request)
+    out["friendship_status"] = await get_friendship_status(viewer["user_id"], user_id) if viewer else "none"
     return out
+
+
+# ---------------------------------------------------------------------------
+# Discover (recommendations)
+# ---------------------------------------------------------------------------
+@api.get("/discover")
+async def discover(user: dict = Depends(get_current_user)):
+    """Recommend games based on user reviews + profile preferences."""
+    user_id = user["user_id"]
+    prefs = user.get("prefs") or {}
+    user_platforms = prefs.get("platforms") or []
+    fav_id = prefs.get("favorite_game_id")
+
+    # Genres/platforms inferred from user's high-rated reviews (rating >= 7)
+    seen_game_ids = set()
+    liked_genres: dict = {}
+    liked_platforms: dict = {}
+    user_reviews_cur = db.reviews.find({"user_id": user_id}, {"_id": 0, "game_id": 1, "rating": 1})
+    async for r in user_reviews_cur:
+        seen_game_ids.add(r["game_id"])
+        if r.get("rating", 0) >= 7:
+            g = await db.games.find_one({"game_id": r["game_id"]}, {"_id": 0, "genres": 1, "platforms": 1})
+            if g:
+                for gen in g.get("genres") or []:
+                    liked_genres[gen] = liked_genres.get(gen, 0) + 1
+                for p in g.get("platforms") or []:
+                    liked_platforms[p] = liked_platforms.get(p, 0) + 1
+
+    # Add favorite game's genres
+    if fav_id:
+        g = await db.games.find_one({"game_id": fav_id}, {"_id": 0, "genres": 1, "platforms": 1})
+        if g:
+            for gen in g.get("genres") or []:
+                liked_genres[gen] = liked_genres.get(gen, 0) + 2
+
+    top_genres = sorted(liked_genres, key=lambda x: -liked_genres[x])[:3]
+    target_platforms = list({*user_platforms, *list(liked_platforms.keys())[:3]})
+
+    # Build sections
+    async def by_filter(query, n=12):
+        if seen_game_ids:
+            query = {**query, "game_id": {"$nin": list(seen_game_ids)}}
+        cur = db.games.find(query, {"_id": 0}).sort("rating", -1).limit(n)
+        return [d async for d in cur]
+
+    # Section 1: For your taste (matches top genres)
+    by_taste = []
+    if top_genres:
+        by_taste = await by_filter({"genres": {"$in": top_genres}}, 12)
+
+    # Section 2: For your platforms
+    by_platform = []
+    if target_platforms:
+        by_platform = await by_filter({"platforms": {"$in": target_platforms}}, 12)
+
+    # Section 3: Hidden gems (high rating, low review count)
+    hidden = await by_filter({"rating": {"$gte": 80}}, 12)
+
+    # Section 4: Trending (community recent reviews)
+    pipeline = [
+        {"$sort": {"created_at": -1}},
+        {"$group": {"_id": "$game_id", "n": {"$sum": 1}, "avg": {"$avg": "$rating"}}},
+        {"$sort": {"n": -1}},
+        {"$limit": 12},
+    ]
+    trending_ids = [d["_id"] async for d in db.reviews.aggregate(pipeline)]
+    trending = []
+    if trending_ids:
+        cur = db.games.find({"game_id": {"$in": trending_ids}}, {"_id": 0})
+        trending = [d async for d in cur]
+
+    return {
+        "summary": {
+            "top_genres": top_genres,
+            "platforms": target_platforms,
+            "review_count": len(seen_game_ids),
+        },
+        "by_taste": by_taste,
+        "by_platform": by_platform,
+        "hidden_gems": hidden,
+        "trending": trending,
+    }
 
 
 # ---------------------------------------------------------------------------

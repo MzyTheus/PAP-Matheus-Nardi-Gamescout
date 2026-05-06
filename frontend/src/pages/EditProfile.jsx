@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { Button } from "@/components/ui/button";
@@ -7,25 +7,33 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { PLATFORMS } from "@/lib/game-data";
+import GamePicker from "@/components/GamePicker";
 import { toast } from "sonner";
 import { Save, ArrowLeft } from "lucide-react";
-import { Link } from "react-router-dom";
 
 export default function EditProfile() {
   const { user, refresh } = useAuth();
   const nav = useNavigate();
   const [form, setForm] = useState(null);
+  const [favGame, setFavGame] = useState(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (user) {
+      const prefs = user.prefs || {};
       setForm({
         name: user.name || "",
         bio: user.bio || "",
         picture: user.picture || "",
         social: { discord: "", tiktok: "", instagram: "", twitch: "", ...(user.social || {}) },
-        prefs: { favorite_game: "", pc_specs: "", platforms: [], ...(user.prefs || {}) },
+        prefs: { favorite_game: "", favorite_game_id: null, pc_specs: "", platforms: [], ...prefs },
       });
+      // Load favorite game doc if id exists
+      if (prefs.favorite_game_id) {
+        api.get(`/games/${prefs.favorite_game_id}`).then((r) => {
+          setFavGame({ game_id: r.data.game_id, title: r.data.title, cover: r.data.cover });
+        }).catch(() => {});
+      }
     }
   }, [user]);
 
@@ -42,7 +50,15 @@ export default function EditProfile() {
     e.preventDefault();
     setSaving(true);
     try {
-      await api.patch("/users/me", form);
+      const payload = {
+        ...form,
+        prefs: {
+          ...form.prefs,
+          favorite_game: favGame?.title || null,
+          favorite_game_id: favGame?.game_id || null,
+        },
+      };
+      await api.patch("/users/me", payload);
       await refresh();
       toast.success("Perfil atualizado");
       nav(`/perfil/${user.user_id}`);
@@ -84,7 +100,7 @@ export default function EditProfile() {
           <h2 className="font-mono uppercase text-xs tracking-widest text-primary">Preferências de jogo</h2>
           <div className="space-y-1.5">
             <Label className="font-mono uppercase text-[11px] tracking-wider">Jogo favorito</Label>
-            <Input data-testid="edit-fav-game" value={form.prefs.favorite_game} onChange={(e) => setForm({ ...form, prefs: { ...form.prefs, favorite_game: e.target.value } })} className="rounded-sm" />
+            <GamePicker value={favGame} onChange={setFavGame} testId="edit-fav-game" />
           </div>
           <div className="space-y-1.5">
             <Label className="font-mono uppercase text-[11px] tracking-wider">Plataformas</Label>

@@ -3,6 +3,7 @@ import { Search, Gamepad2, Users, MessageSquareWarning, LogOut, User as UserIcon
 import { useState } from "react";
 import { useAuth } from "../lib/auth-context";
 import { useTheme } from "../lib/use-theme";
+import { handleOf, cacheBust } from "../lib/format";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "./ui/dropdown-menu";
@@ -45,6 +46,7 @@ export default function Navbar() {
         <nav className="hidden md:flex items-center gap-1">
           <NavLink data-testid="nav-feed" to="/" end className={({ isActive }) => `px-3 py-2 text-sm font-mono uppercase tracking-wider transition-colors ${isActive ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}>Feed</NavLink>
           <NavLink data-testid="nav-jogos" to="/jogos" className={({ isActive }) => `px-3 py-2 text-sm font-mono uppercase tracking-wider transition-colors ${isActive ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}>Jogos</NavLink>
+          <NavLink data-testid="nav-descobrir" to="/descobrir" className={({ isActive }) => `px-3 py-2 text-sm font-mono uppercase tracking-wider transition-colors ${isActive ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}>Descobrir</NavLink>
           <NavLink data-testid="nav-ajuda" to="/ajuda" className={({ isActive }) => `px-3 py-2 text-sm font-mono uppercase tracking-wider transition-colors ${isActive ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}>Ajuda</NavLink>
           <NavLink data-testid="nav-amigos" to="/amigos" className={({ isActive }) => `px-3 py-2 text-sm font-mono uppercase tracking-wider transition-colors ${isActive ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}>Amigos</NavLink>
         </nav>
@@ -58,7 +60,7 @@ export default function Navbar() {
             <DropdownMenuTrigger asChild>
               <button data-testid="user-menu" className="flex items-center gap-2 px-2 py-1 rounded-sm hover:bg-muted transition-colors">
                 <Avatar className="h-8 w-8 rounded-sm">
-                  <AvatarImage src={user.picture} />
+                  <AvatarImage src={user.picture ? cacheBust(user.picture, (user.picture || "").length) : null} />
                   <AvatarFallback className="rounded-sm bg-primary text-primary-foreground font-mono text-xs">{(user.name || "U").slice(0,2).toUpperCase()}</AvatarFallback>
                 </Avatar>
               </button>
@@ -66,7 +68,8 @@ export default function Navbar() {
             <DropdownMenuContent align="end" className="w-56 rounded-sm">
               <div className="px-2 py-2">
                 <div className="text-sm font-semibold truncate">{user.name}</div>
-                <div className="text-xs text-muted-foreground font-mono">{user.points} pts · {user.rank?.name || "Novato"}</div>
+                <div className="text-xs text-muted-foreground font-mono truncate">{handleOf(user.user_id)}</div>
+                <div className="text-xs text-muted-foreground font-mono mt-0.5">{user.points} pts · {user.rank?.name || "Novato"}</div>
               </div>
               <DropdownMenuSeparator />
               <DropdownMenuItem data-testid="menu-profile" onClick={() => nav(`/perfil/${user.user_id}`)}>

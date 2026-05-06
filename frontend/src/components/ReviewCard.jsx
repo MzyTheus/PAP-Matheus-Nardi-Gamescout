@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { Star, ThumbsUp, ThumbsDown, Clock } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar";
 import { PLATFORM_LABEL } from "../lib/game-data";
+import { cacheBust } from "../lib/format";
 
 export default function ReviewCard({ review, showGame = false }) {
   return (
@@ -9,7 +10,7 @@ export default function ReviewCard({ review, showGame = false }) {
       <div className="flex items-start justify-between gap-3">
         <Link to={`/perfil/${review.user_id}`} className="flex items-center gap-3 group/u">
           <Avatar className="h-9 w-9 rounded-sm">
-            <AvatarImage src={review.user_picture} />
+            <AvatarImage src={review.user_picture ? cacheBust(review.user_picture, (review.user_picture || "").length) : null} />
             <AvatarFallback className="rounded-sm bg-primary text-primary-foreground font-mono text-xs">{(review.user_name || "U").slice(0, 2).toUpperCase()}</AvatarFallback>
           </Avatar>
           <div>
