@@ -27,17 +27,18 @@ Plataforma social de jogos com:
 ## Implemented (2026-05-06)
 - ✅ Auth: register, login, logout, /me, /me/full, refresh, Google session exchange
 - ✅ Profile CRUD: bio, social links (Discord/TikTok/Insta/Twitch), prefs (favorite_game, platforms, pc_specs)
-- ✅ Game catalog (31 seeded), search, genre/platform filters
+- ✅ **IGDB importer** — fetches 150–200 jogos populares + recentes na inicialização (replaces seed); endpoint admin `POST /api/admin/games/refresh` para re-importar
+- ✅ Catálogo dinâmico com filtros gerados automaticamente do conteúdo (`/api/games/meta` retorna géneros + plataformas com contagens)
 - ✅ Game detail with avg_rating + review_count
-- ✅ Reviews: 1–10 rating, hours_played, sub-categories (graphics/story/tutorial/gameplay), recommends, platform, note
-- ✅ Ranking: 5 levels (Novato 0/Explorador 50/Aventureiro 250/Avaliador 1000/Apreciador 5000) with points
-- ✅ Points: +50 complete review, +25 incomplete; one award per (user, game)
-- ✅ Guides: gated to 50+ pts, 5 categories (dica/tutorial/como-zerar/estratégia/macete)
-- ✅ Help requests + replies (3 kinds: ajuda, jogar-junto, dica)
+- ✅ Reviews: 1–10 rating, hours_played, sub-categories, recommends, platform, note
+- ✅ Ranking: 5 levels with points (+50 complete review, +25 incomplete; one award per pair)
+- ✅ Guides: gated to 50+ pts, 5 categories
+- ✅ Help requests + replies
 - ✅ Friends: search, request, accept, list
-- ✅ Theme toggle (light orange+white / dark orange+black) with localStorage persistence
-- ✅ Auth callback for Emergent Google OAuth
-- ✅ Brute-force lockout (5 attempts → 15min)
+- ✅ Theme toggle (dark/light) com localStorage
+- ✅ Auth callback Emergent Google OAuth
+- ✅ Brute-force lockout
+- ✅ CORS via regex `*.emergentagent.com` + frontend usa `window.location.origin` (resolve cross-origin entre URLs preview)
 
 ## Backlog
 ### P1

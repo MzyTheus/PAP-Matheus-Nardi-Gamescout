@@ -8,12 +8,12 @@ import { Button } from "@/components/ui/button";
 import { ArrowRight, Flame, Sparkles, Skull, Zap } from "lucide-react";
 
 const CATEGORIES = [
-  { key: "Terror", label: "Terror", icon: Skull },
-  { key: "Ação", label: "Ação", icon: Zap },
-  { key: "RPG", label: "RPG", icon: Sparkles },
   { key: "Aventura", label: "Aventura", icon: Flame },
+  { key: "RPG", label: "RPG", icon: Sparkles },
   { key: "FPS", label: "FPS", icon: Zap },
+  { key: "Ação", label: "Ação", icon: Zap },
   { key: "Indie", label: "Indie", icon: Sparkles },
+  { key: "Puzzle", label: "Puzzle", icon: Skull },
 ];
 
 function Section({ title, sub, children, action }) {
@@ -120,7 +120,7 @@ export default function Home() {
       </Section>
 
       {/* Horror section */}
-      <Section title="Para o pessoal do Terror" sub="Aperta o cinto">
+      <Section title="Para o pessoal de Aventura" sub="Os mais imersivos">
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           {data.horror.map((g) => (<GameCard key={g.game_id} game={g} />))}
         </div>

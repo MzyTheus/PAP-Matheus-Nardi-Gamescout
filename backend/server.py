@@ -9,6 +9,7 @@ load_dotenv(ROOT_DIR / ".env")
 
 import os
 import uuid
+import asyncio
 import logging
 import secrets
 from datetime import datetime, timezone, timedelta
@@ -24,6 +25,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr, Field, ConfigDict
 
 from seed import GAMES_SEED
+import igdb as igdb_mod
 
 # ---------------------------------------------------------------------------
 # DB
@@ -293,10 +295,43 @@ async def startup():
     elif not verify_password(admin_password, existing.get("password_hash", "")):
         await db.users.update_one({"email": admin_email}, {"$set": {"password_hash": hash_password(admin_password)}})
 
-    # Seed games
-    for g in GAMES_SEED:
-        await db.games.update_one({"game_id": g["game_id"]}, {"$setOnInsert": g}, upsert=True)
-    log.info("Games seeded: %d", await db.games.count_documents({}))
+    # Game catalog: import from IGDB (replaces previous catalog) — fallback to seed if it fails
+    asyncio.create_task(_refresh_games_catalog())
+
+
+async def _refresh_games_catalog():
+    cid = os.environ.get("TWITCH_CLIENT_ID")
+    cs = os.environ.get("TWITCH_CLIENT_SECRET")
+    limit = int(os.environ.get("IGDB_IMPORT_LIMIT", "200"))
+    existing = await db.games.count_documents({})
+    if not cid or not cs:
+        log.warning("IGDB credentials missing — falling back to local seed (%d games)", len(GAMES_SEED))
+        if existing == 0:
+            for g in GAMES_SEED:
+                await db.games.update_one({"game_id": g["game_id"]}, {"$setOnInsert": g}, upsert=True)
+        return
+    try:
+        loop = asyncio.get_running_loop()
+        games = await loop.run_in_executor(None, igdb_mod.fetch_games, cid, cs, limit)
+        if not games:
+            raise RuntimeError("IGDB returned no games")
+        await db.games.delete_many({})
+        await db.games.insert_many(games)
+        log.info("IGDB import complete: %d games", len(games))
+    except Exception as e:
+        log.error("IGDB import failed: %s — keeping existing %d games", e, existing)
+        if existing == 0:
+            for g in GAMES_SEED:
+                await db.games.update_one({"game_id": g["game_id"]}, {"$setOnInsert": g}, upsert=True)
+
+
+@api.post("/admin/games/refresh")
+async def admin_refresh_games(user: dict = Depends(get_current_user)):
+    """Manually trigger IGDB re-import (admin only)."""
+    if user.get("role") != "admin":
+        raise HTTPException(403, "Apenas admin")
+    asyncio.create_task(_refresh_games_catalog())
+    return {"ok": True, "message": "Importação iniciada em background"}
 
 
 @app.on_event("shutdown")
@@ -501,7 +536,7 @@ async def get_user_public(user_id: str):
 # Games
 # ---------------------------------------------------------------------------
 @api.get("/games")
-async def list_games(q: Optional[str] = None, genre: Optional[str] = None, platform: Optional[str] = None, limit: int = 60):
+async def list_games(q: Optional[str] = None, genre: Optional[str] = None, platform: Optional[str] = None, limit: int = 200):
     flt = {}
     if q:
         flt["title"] = {"$regex": q, "$options": "i"}
@@ -513,23 +548,32 @@ async def list_games(q: Optional[str] = None, genre: Optional[str] = None, platf
     return await cur.to_list(limit)
 
 
+@api.get("/games/meta")
+async def games_meta():
+    """Aggregate available genres and platforms from current catalog."""
+    pipe_g = [{"$unwind": "$genres"}, {"$group": {"_id": "$genres", "n": {"$sum": 1}}}, {"$sort": {"n": -1}}]
+    pipe_p = [{"$unwind": "$platforms"}, {"$group": {"_id": "$platforms", "n": {"$sum": 1}}}, {"$sort": {"n": -1}}]
+    genres = [{"name": d["_id"], "count": d["n"]} async for d in db.games.aggregate(pipe_g)]
+    platforms = [{"id": d["_id"], "count": d["n"]} async for d in db.games.aggregate(pipe_p)]
+    total = await db.games.count_documents({})
+    return {"genres": genres, "platforms": platforms, "total": total}
+
+
 @api.get("/games/featured")
 async def featured_games():
-    """Return curated sections for homepage."""
-    famous_ids = ["zelda-totk", "elden-ring", "gta-v", "minecraft", "rdr2", "witcher-3"]
-    horror_ids = ["resident-evil-4-r", "silent-hill-2-r", "alan-wake-2", "phasmophobia"]
-    recent_ids = ["bg3", "spider-man-2", "hogwarts-legacy", "totk", "ff16"]
+    """Return curated sections for homepage based on whatever's in DB."""
+    async def top_by(query, sort_field, n):
+        cur = db.games.find(query, {"_id": 0}).sort(sort_field, -1).limit(n)
+        return [d async for d in cur]
 
-    async def by_ids(ids):
-        out = []
-        cur = db.games.find({"game_id": {"$in": ids}}, {"_id": 0})
-        async for d in cur:
-            out.append(d)
-        return out
-
-    famous = await by_ids(famous_ids)
-    horror = await by_ids(horror_ids)
-    recent_titles = await by_ids(recent_ids)
+    famous = await top_by({"rating": {"$gte": 80}}, "rating", 12)
+    if not famous:
+        famous = await top_by({}, "year", 12)
+    horror = await top_by({"genres": {"$in": ["Terror", "Horror"]}}, "rating", 8)
+    if not horror:
+        horror = await top_by({"genres": "Aventura"}, "rating", 8)
+    recent_titles = await top_by({"year": {"$gte": 2022}}, "year", 10)
+    you_may_like = famous[:8]
 
     # Recent reviews
     rev_cur = db.reviews.find({}, {"_id": 0}).sort("created_at", -1).limit(10)
@@ -546,8 +590,8 @@ async def featured_games():
         recent_reviews.append(r)
 
     return {
-        "you_may_like": famous,
-        "famous": famous,
+        "you_may_like": you_may_like,
+        "famous": famous[:8],
         "horror": horror,
         "recent_titles": recent_titles,
         "recent_reviews": recent_reviews,
@@ -832,10 +876,12 @@ async def accept_friend(user_id: str, user: dict = Depends(get_current_user)):
 app.include_router(api)
 
 frontend_url = os.environ.get("FRONTEND_URL", "*")
-allowed = [frontend_url] if frontend_url != "*" else ["*"]
+allowed = [u.strip() for u in frontend_url.split(",") if u.strip()] if frontend_url != "*" else []
+# Allow any *.preview.emergentagent.com origin for dev/preview reachability
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed,
+    allow_origin_regex=r"https?://([a-z0-9-]+\.)*emergentagent\.com$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

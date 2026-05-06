@@ -4,7 +4,7 @@ import { api } from "@/lib/api";
 import GameCard from "@/components/GameCard";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { GENRES, PLATFORMS } from "@/lib/game-data";
+import { PLATFORM_LABEL } from "@/lib/game-data";
 import { Search } from "lucide-react";
 
 export default function GamesCatalog() {
@@ -16,12 +16,15 @@ export default function GamesCatalog() {
   const [search, setSearch] = useState(q);
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [meta, setMeta] = useState({ genres: [], platforms: [] });
 
   useEffect(() => { setSearch(q); }, [q]);
 
+  useEffect(() => { api.get("/games/meta").then((r) => setMeta(r.data)); }, []);
+
   useEffect(() => {
     setLoading(true);
-    const sp = {};
+    const sp = { limit: 200 };
     if (q) sp.q = q;
     if (genre) sp.genre = genre;
     if (platform) sp.platform = platform;
@@ -42,7 +45,7 @@ export default function GamesCatalog() {
   return (
     <div className="space-y-8">
       <div>
-        <div className="gs-overline">Catálogo</div>
+        <div className="gs-overline">Catálogo · {meta.total || ""} jogos</div>
         <h1 className="font-heading font-black text-3xl sm:text-4xl uppercase tracking-tight mt-1">Procura o teu próximo jogo</h1>
       </div>
 
@@ -59,8 +62,8 @@ export default function GamesCatalog() {
           <div className="font-mono text-xs uppercase tracking-widest text-muted-foreground mb-2">Géneros</div>
           <div className="flex flex-wrap gap-2">
             <button onClick={() => setParam("genre", "")} className={`px-3 py-1.5 text-xs font-mono uppercase tracking-wider border rounded-sm transition ${!genre ? "bg-primary text-primary-foreground border-primary" : "border-border hover:border-primary"}`}>Todos</button>
-            {GENRES.map((g) => (
-              <button key={g} data-testid={`genre-${g}`} onClick={() => setParam("genre", g)} className={`px-3 py-1.5 text-xs font-mono uppercase tracking-wider border rounded-sm transition ${genre === g ? "bg-primary text-primary-foreground border-primary" : "border-border hover:border-primary"}`}>{g}</button>
+            {meta.genres.map((g) => (
+              <button key={g.name} data-testid={`genre-${g.name}`} onClick={() => setParam("genre", g.name)} className={`px-3 py-1.5 text-xs font-mono uppercase tracking-wider border rounded-sm transition ${genre === g.name ? "bg-primary text-primary-foreground border-primary" : "border-border hover:border-primary"}`}>{g.name} <span className="text-muted-foreground/60 ml-1">{g.count}</span></button>
             ))}
           </div>
         </div>
@@ -68,8 +71,8 @@ export default function GamesCatalog() {
           <div className="font-mono text-xs uppercase tracking-widest text-muted-foreground mb-2">Plataforma</div>
           <div className="flex flex-wrap gap-2">
             <button onClick={() => setParam("platform", "")} className={`px-3 py-1.5 text-xs font-mono uppercase tracking-wider border rounded-sm transition ${!platform ? "bg-primary text-primary-foreground border-primary" : "border-border hover:border-primary"}`}>Todas</button>
-            {PLATFORMS.map((p) => (
-              <button key={p.id} onClick={() => setParam("platform", p.id)} className={`px-3 py-1.5 text-xs font-mono uppercase tracking-wider border rounded-sm transition ${platform === p.id ? "bg-primary text-primary-foreground border-primary" : "border-border hover:border-primary"}`}>{p.label}</button>
+            {meta.platforms.map((p) => (
+              <button key={p.id} onClick={() => setParam("platform", p.id)} className={`px-3 py-1.5 text-xs font-mono uppercase tracking-wider border rounded-sm transition ${platform === p.id ? "bg-primary text-primary-foreground border-primary" : "border-border hover:border-primary"}`}>{PLATFORM_LABEL[p.id] || p.id} <span className="text-muted-foreground/60 ml-1">{p.count}</span></button>
             ))}
           </div>
         </div>
