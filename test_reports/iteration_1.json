@@ -1,0 +1,45 @@
+{
+  "summary": "Ran comprehensive pytest suite against GameScout backend via REACT_APP_BACKEND_URL. 30 / 31 tests PASSED (96.7%). Covered auth (register, login, me, logout, google session invalid), users + rank computation (Novato vs Apreciador), profile PATCH with persistence, games list + filters (q/genre/platform), featured sections, game detail with avg_rating/review_count aggregates, review creation (+25 incomplete / +50 complete) and re-submission idempotency, guide gating (403 under 50pts; admin success), help requests + replies, full friends request/accept flow, users search, and MongoDB _id leak hygiene. Found ONE real backend bug: route ordering places /users/{user_id} before /users/search so every search returns 404.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/users/search",
+        "issue": "Returns 404 for every query because the route is defined AFTER GET /api/users/{user_id} in server.py. FastAPI matches path params first, so /users/search is interpreted as user_id='search' and get_user_public raises 404 'Utilizador não encontrado'. Friend-finding / user search feature is completely broken.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Fix route ordering in /app/backend/server.py: move the `@api.get('/users/search')` decorator ABOVE `@api.get('/users/{user_id}')` (currently defined at lines ~478 and ~820). After fix, re-run `pytest /app/backend/tests/backend_test.py::TestUsersAndRanks::test_users_search_excludes_self -v` to verify."
+  ],
+  "critical_code_review_comments": [
+    "Route ordering bug: dynamic path param routes must come after static-subpath routes of the same prefix. /users/search is shadowed by /users/{user_id}.",
+    "server.py is 847 lines — consider splitting into routers/{auth,users,games,reviews,guides,help,friends}.py for maintainability (>700 line threshold).",
+    "Duplicate date-string coercion logic for created_at/updated_at is repeated in list_reviews, featured_games, user_reviews, list_help, list_guides — extract a small helper.",
+    "`/auth/refresh` renews only access_token but does not rotate refresh_token (OK for MVP, but note for future hardening).",
+    "`public_user()` does not stringify `created_at` when the value is already a str (mixed formats across collections); acceptable but inconsistent.",
+    "Login brute-force: `locked_until` is always bumped on every failed attempt (even past 5). Not harmful but not spec'd.",
+    "Featured section `you_may_like` is literally identical to `famous` (both use famous_ids) — likely placeholder; confirm intent."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (new)",
+    "/app/backend/tests/__init__.py (new, empty)"
+  ],
+  "success_rate": { "backend": "96.7%", "frontend": "not tested (backend-only request)" },
+  "test_credentials": "Admin admin@gamescout.pt / admin123 (verified working). Ephemeral TEST_user_<uuid>@gamescout.pt / tester123 registered at test time for each run to avoid brute-force lockout from previous iterations.",
+  "seed_data_creation": "Suite registers two TEST_ users per run, creates ~3 reviews, 1 admin guide, 1 help request with 1 reply, and 1 accepted friendship. All prefixed TEST_ for identification. No cleanup performed (MongoDB carries state across runs — safe because unique uuid suffixes prevent conflicts).",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Single backend bug outstanding: /api/users/search route shadowing. Fix is a 2-line reorder in server.py. After main agent fixes, re-run the full pytest suite — everything else (31 endpoints in scope) is green. Admin has 10000 pts → Apreciador de Obras, which is important for any future rank-gated feature tests. Review points logic verified: +25 incomplete, +50 complete, re-submission does NOT re-award. Games seeded count = 31 (matches spec).",
+  "rca of the issue": "RCA for /api/users/search 404: In FastAPI/Starlette, routes are matched in the order they are registered. server.py registers `GET /users/{user_id}` at line ~478 (get_user_public) before `GET /users/search` at line ~820 (search_users). When a request arrives for /api/users/search, the router finds /users/{user_id} first and binds user_id='search'; the handler queries db.users.find_one({'user_id': 'search'}), gets None, and raises 404. Reproduction: `curl -b cookies.txt https://gamescout-reviews.preview.emergentagent.com/api/users/search?q=admin` → 404 'Utilizador não encontrado'. Mitigation: move the `/users/search` route decorator definition above `/users/{user_id}` in server.py (or change the path to something like `/users/search/by-name` to avoid the conflict)."
+}
