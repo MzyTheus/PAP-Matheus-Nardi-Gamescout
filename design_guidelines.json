@@ -1,0 +1,114 @@
+{
+  "theme_and_archetype": {
+    "domain": "Gaming Community & Review Platform",
+    "theme": "Dark Primary (with Light Toggle)",
+    "archetype": "Archetype 2 (Performance Pro) adapted for Gaming",
+    "rationale": "High contrast, energetic, performance-oriented UI that prioritizes stats, rankings, and game art. Dark mode uses deep black and vibrant orange to avoid generic slop and generic purple/violet."
+  },
+  "colors": {
+    "primary": {
+      "DEFAULT": "#FF5722",
+      "hover": "#E64A19",
+      "glow": "rgba(255, 87, 34, 0.5)",
+      "muted": "#FF8A65"
+    },
+    "dark": {
+      "background": "#050505",
+      "surface": "#121212",
+      "surface_hover": "#1A1A1A",
+      "border": "#1F1F1F",
+      "text_primary": "#FFFFFF",
+      "text_secondary": "#A0A0A0",
+      "success": "#22C55E",
+      "danger": "#EF4444"
+    },
+    "light": {
+      "background": "#FAFAFA",
+      "surface": "#FFFFFF",
+      "surface_hover": "#F0F0F0",
+      "border": "#E5E5E5",
+      "text_primary": "#0A0A0A",
+      "text_secondary": "#525252",
+      "success": "#16A34A",
+      "danger": "#DC2626"
+    }
+  },
+  "typography": {
+    "fonts": {
+      "heading": "'Unbounded', sans-serif",
+      "body": "'Manrope', sans-serif",
+      "mono": "'JetBrains Mono', monospace"
+    },
+    "scales": {
+      "h1": "text-4xl sm:text-5xl tracking-tighter font-black uppercase",
+      "h2": "text-2xl sm:text-3xl tracking-tight font-bold",
+      "h3": "text-xl sm:text-2xl font-semibold",
+      "body": "text-base leading-relaxed",
+      "overline": "text-xs tracking-[0.2em] uppercase font-mono text-primary",
+      "stats": "text-lg font-mono font-bold"
+    }
+  },
+  "layout_strategy": {
+    "spacing": "Generous outer padding (p-8 to p-12) but dense data clustering (gap-4) for game stats.",
+    "border_radius": "rounded-sm (4px) to rounded-md (6px) max. Avoid overly pill-shaped buttons unless for specific pill-tags. Keep it sharp, technical, and cardless where possible.",
+    "grids": {
+      "profile_bento": "grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-4 or gap-6. Bio spans 2 cols, stats 1 col.",
+      "game_catalog": "grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-6. Posters must be vertically oriented (aspect-[3/4])."
+    },
+    "surfaces": "Use the 'Grid Borders' (Technical Look) or 'Neumorphism' (Sharp 1px border with flat bg) for dashboard/profile widgets. Pure #121212 flat background with 1px #1F1F1F border."
+  },
+  "motion_and_interactions": {
+    "hover": "Translate-y-[-2px] with increased border brightness and primary color text swap. Never rely on just background color change.",
+    "focus": "focus:ring-2 focus:ring-primary focus:outline-none focus:ring-offset-2 focus:ring-offset-background",
+    "transitions": "transition-all duration-200 ease-in-out"
+  },
+  "components_customization": {
+    "buttons": "Sharp corners (rounded-sm). Primary button uses solid #FF5722. Secondary uses transparent with #1F1F1F border and #FF5722 hover text.",
+    "progress_bars": "For the Ranking system (Novato -> Apreciador). Segmented neon orange fill over dark grey track. No rounded ends.",
+    "badges": "Used for platforms (PC, PS, Xbox) and Genres. Sharp rectangular, border 1px, mono font.",
+    "tabs": "Shadcn tabs modified to have an orange underline active state rather than a pill background. Very sharp, transparent background.",
+    "star_rating": "Interactive SVG stars, filling with solid orange on hover/active. Empty state is dark grey stroke."
+  },
+  "image_urls": {
+    "hero_backgrounds": [
+      {
+        "url": "https://images.unsplash.com/photo-1744391309979-3325fcc3079a?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1NzZ8MHwxfHNlYXJjaHw0fHxvcmFuZ2UlMjBmdXR1cmlzdGljJTIwdGV4dHVyZXxlbnwwfHx8fDE3NzgwNjI5MDl8MA&ixlib=rb-4.1.0&q=85",
+        "description": "Abstract orange/gold swirl texture, perfect for hero section overlay.",
+        "category": "background"
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1698064534597-e039edaa0717?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzOTB8MHwxfHNlYXJjaHwyfHx2aWRlbyUyMGdhbWUlMjBjb3ZlciUyMGFydHxlbnwwfHx8fDE3NzgwNjI5MTB8MA&ixlib=rb-4.1.0&q=85",
+        "description": "Dark gaming machine neon, use as atmospheric background.",
+        "category": "background"
+      }
+    ],
+    "avatars": [
+      {
+        "url": "https://images.unsplash.com/photo-1759701547089-12599225b4c4?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxOTB8MHwxfHNlYXJjaHwyfHxlc3BvcnRzJTIwZ2FtZXIlMjBwb3J0cmFpdHxlbnwwfHx8fDE3NzgwNjI5MDl8MA&ixlib=rb-4.1.0&q=85",
+        "description": "Female esports gamer portrait",
+        "category": "user_avatar"
+      },
+      {
+        "url": "https://images.pexels.com/photos/7915303/pexels-photo-7915303.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Serious young male gamer in gaming lounge",
+        "category": "user_avatar"
+      }
+    ],
+    "game_placeholders": [
+      {
+        "url": "https://images.unsplash.com/photo-1680209632103-744a845bea0f?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzOTB8MHwxfHNlYXJjaHwzfHx2aWRlbyUyMGdhbWUlMjBjb3ZlciUyMGFydHxlbnwwfHx8fDE3NzgwNjI5MTB8MA&ixlib=rb-4.1.0&q=85",
+        "description": "Generic game box on table",
+        "category": "game_cover"
+      }
+    ]
+  },
+  "instructions_to_main_agent": {
+    "general": "Build GameScout as a hybrid fullstack app using React, Tailwind, and JS (NOT TS). The app must support a dark theme (default) and a light theme toggle. Prioritize aesthetics: sharp corners, high contrast, and energetic gaming vibes without being 'slop'.",
+    "theme_implementation": "Setup Tailwind with custom colors mapped to primary, dark.background, light.background, etc. Use CSS variables to easily switch themes. Do NOT use generic purple/violet colors.",
+    "fonts": "Import 'Unbounded' (headings), 'Manrope' (body), and 'JetBrains Mono' (stats/code/ranks) via Google Fonts. Map them in tailwind.config.js.",
+    "components": "Extensively customize Shadcn components. Strip away generic Vercel soft-shadows and replace with 1px border treatments and sharp (rounded-sm) edges.",
+    "testing": "All interactive elements MUST include data-testid attributes (e.g., data-testid='login-submit-button').",
+    "pages_to_build": "1. Feed/Homepage (Você pode gostar, avaliações, jogos famosos, categorias). 2. User Profile (Bio, accounts, game prefs, hardware specs, ranking bar). 3. Game Detail Page (Tabs for Avaliações and Guias). 4. Rating Form (Stars, hours, categories, recommend yes/no). 5. Social & Help (Requests/Forums).",
+    "language": "Use Portuguese (pt-PT) for all copy."
+  }
+}
