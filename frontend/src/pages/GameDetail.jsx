@@ -5,7 +5,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import ReviewCard from "@/components/ReviewCard";
 import { useAuth } from "@/lib/auth-context";
-import { Star, Calendar, Cpu, BookOpen, MessageCircleQuestion, ArrowLeft, Trash2, MoreVertical, Edit2, Heart } from "lucide-react";
+import { Star, BookOpen, MessageCircleQuestion, ArrowLeft, Trash2, MoreVertical, Edit2, Heart } from "lucide-react";
 import { PLATFORM_LABEL } from "@/lib/game-data";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
@@ -29,21 +29,30 @@ export default function GameDetail() {
   const [reviews, setReviews] = useState([]);
   const [guides, setGuides] = useState([]);
 
-  useEffect(() => {
-    api.get(`/games/${gameId}`).then((r) => setGame(r.data));
-    api.get(`/games/${gameId}/reviews`).then((r) => setReviews(r.data));
-    api.get(`/games/${gameId}/guides`).then((r) => setGuides(r.data));
-  }, [gameId]);
-
   const load = () => {
     api.get(`/games/${gameId}`).then((r) => setGame(r.data));
     api.get(`/games/${gameId}/reviews`).then((r) => setReviews(r.data));
     api.get(`/games/${gameId}/guides`).then((r) => setGuides(r.data));
   };
+  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [gameId]);
 
   if (!game) return <div className="font-mono text-sm text-muted-foreground py-20 text-center tracking-wider">A CARREGAR…</div>;
 
   const canCreateGuide = user && (user.points >= 50);
+  const inWishlist = !!user?.wishlist?.includes(gameId);
+
+  const toggleWishlist = async () => {
+    try {
+      if (inWishlist) {
+        await api.delete(`/wishlist/${gameId}`);
+        toast.success("Removido da wishlist");
+      } else {
+        await api.post(`/wishlist/${gameId}`);
+        toast.success("Adicionado à wishlist");
+      }
+      refresh();
+    } catch (e) { toast.error(e.response?.data?.detail || "Erro"); }
+  };
 
   return (
     <div className="space-y-8">
@@ -92,30 +101,24 @@ export default function GameDetail() {
           </div>
 
           <div className="flex flex-wrap gap-2 pt-2">
-            <Button asChild data-testid="game-review-btn" className="rounded-sm font-mono uppercase tracking-wider"><Link to={`/jogos/${gameId}/avaliar`}>Avaliar este jogo</Link></Button>
+            <Button asChild data-testid="game-review-btn" className="rounded-sm font-mono uppercase tracking-wider">
+              <Link to={`/jogos/${gameId}/avaliar`}>Avaliar este jogo</Link>
+            </Button>
             {canCreateGuide && (
-              <Button asChild variant="outline" data-testid="game-guide-btn" className="rounded-sm font-mono uppercase tracking-wider"><Link to={`/jogos/${gameId}/guia/novo`}>Criar guia</Link></Button>
+              <Button asChild variant="outline" data-testid="game-guide-btn" className="rounded-sm font-mono uppercase tracking-wider">
+                <Link to={`/jogos/${gameId}/guia/novo`}>Criar guia</Link>
+              </Button>
             )}
             {user && (
               <Button
                 type="button"
                 variant="outline"
                 data-testid="game-wishlist-toggle"
-                onClick={async () => {
-                  try {
-                    if (user.wishlist?.includes(gameId)) {
-                      await api.delete(`/wishlist/${gameId}`);
-                      toast.success("Removido da wishlist");
-                    } else {
-                      await api.post(`/wishlist/${gameId}`);
-                      toast.success("Adicionado à wishlist");
-                    }
-                    refresh();
-                  } catch (e) { toast.error(e.response?.data?.detail || "Erro"); }
-                }}
-                className={`rounded-sm font-mono uppercase tracking-wider ${user.wishlist?.includes(gameId) ? "border-primary text-primary" : ""}`}
+                onClick={toggleWishlist}
+                className={`rounded-sm font-mono uppercase tracking-wider ${inWishlist ? "border-primary text-primary" : ""}`}
               >
-                <Heart size={14} className={`mr-2 ${user.wishlist?.includes(gameId) ? "fill-current" : ""}`}/> {user.wishlist?.includes(gameId) ? "Na wishlist" : "Wishlist"}
+                <Heart size={14} className={`mr-2 ${inWishlist ? "fill-current" : ""}`} />
+                {inWishlist ? "Na wishlist" : "Wishlist"}
               </Button>
             )}
           </div>
@@ -162,32 +165,45 @@ export default function GameDetail() {
               </div>
             </div>
           ) : (
-            guides.map((g) => (
-              <article key={g.guide_id} data-testid={`guide-${g.guide_id}`} className="gs-card p-5 space-y-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-[10px] uppercase tracking-widest text-primary">{CATEGORY_LABEL[g.category] || g.category}</span>
-                    <span className="font-mono text-[10px] text-muted-foreground">por {g.author_name}</span>
-                  </div>
-                </div>
-                <h3 className="font-heading text-xl font-bold tracking-tight">{g.title}</h3>
-                <p className="text-sm leading-relaxed whitespace-pre-line text-foreground/90">{g.content}</p>
-              </article>
-            ))
+            guides.map((g) => <GuideItem key={g.guide_id} guide={g} currentUser={user} onChanged={load} />)
           )}
         </TabsContent>
       </Tabs>
     </div>
   );
 }
-o"); }
+
+function GuideItem({ guide, currentUser, onChanged }) {
+  const [editing, setEditing] = useState(false);
+  const [confirm, setConfirm] = useState(false);
+  const [form, setForm] = useState({ title: guide.title, content: guide.content, category: guide.category });
+  const [saving, setSaving] = useState(false);
+  const isOwner = currentUser && (currentUser.user_id === guide.author_id || currentUser.role === "admin");
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api.patch(`/guides/${guide.guide_id}`, form);
+      toast.success("Guia atualizado");
+      setEditing(false);
+      onChanged && onChanged();
+    } catch (e) { toast.error(e.response?.data?.detail || "Erro"); }
+    finally { setSaving(false); }
+  };
+
+  const remove = async () => {
+    try {
+      await api.delete(`/guides/${guide.guide_id}`);
+      toast.success("Guia removido");
+      onChanged && onChanged();
+    } catch (e) { toast.error(e.response?.data?.detail || "Erro"); }
   };
 
   if (editing) {
     return (
       <article className="gs-card p-5 space-y-3">
         <Select value={form.category} onValueChange={(v) => setForm({ ...form, category: v })}>
-          <SelectTrigger className="rounded-sm w-48"><SelectValue/></SelectTrigger>
+          <SelectTrigger className="rounded-sm w-48"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="dica">Dica</SelectItem>
             <SelectItem value="tutorial">Tutorial</SelectItem>
@@ -210,17 +226,17 @@ o"); }
     <article data-testid={`guide-${guide.guide_id}`} className="gs-card p-5 space-y-3">
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <span className="font-mono text-[10px] uppercase tracking-widest text-primary">{guide.category}</span>
+          <span className="font-mono text-[10px] uppercase tracking-widest text-primary">{CATEGORY_LABEL[guide.category] || guide.category}</span>
           <span className="font-mono text-[10px] text-muted-foreground">por {guide.author_name}</span>
         </div>
         {isOwner && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <button data-testid={`guide-menu-${guide.guide_id}`} className="p-1 rounded-sm hover:bg-muted text-muted-foreground"><MoreVertical size={16}/></button>
+              <button data-testid={`guide-menu-${guide.guide_id}`} className="p-1 rounded-sm hover:bg-muted text-muted-foreground"><MoreVertical size={16} /></button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="rounded-sm">
-              <DropdownMenuItem data-testid={`guide-edit-${guide.guide_id}`} onClick={() => setEditing(true)}><Edit2 size={14} className="mr-2"/> Editar</DropdownMenuItem>
-              <DropdownMenuItem data-testid={`guide-delete-${guide.guide_id}`} className="text-destructive focus:text-destructive" onClick={() => setConfirm(true)}><Trash2 size={14} className="mr-2"/> Apagar</DropdownMenuItem>
+              <DropdownMenuItem data-testid={`guide-edit-${guide.guide_id}`} onClick={() => setEditing(true)}><Edit2 size={14} className="mr-2" /> Editar</DropdownMenuItem>
+              <DropdownMenuItem data-testid={`guide-delete-${guide.guide_id}`} className="text-destructive focus:text-destructive" onClick={() => setConfirm(true)}><Trash2 size={14} className="mr-2" /> Apagar</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         )}
@@ -229,7 +245,10 @@ o"); }
       <p className="text-sm leading-relaxed whitespace-pre-line text-foreground/90">{guide.content}</p>
       <AlertDialog open={confirm} onOpenChange={setConfirm}>
         <AlertDialogContent className="rounded-sm">
-          <AlertDialogHeader><AlertDialogTitle>Apagar guia?</AlertDialogTitle><AlertDialogDescription>Esta ação não pode ser revertida.</AlertDialogDescription></AlertDialogHeader>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Apagar guia?</AlertDialogTitle>
+            <AlertDialogDescription>Esta ação não pode ser revertida.</AlertDialogDescription>
+          </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel className="rounded-sm">Cancelar</AlertDialogCancel>
             <AlertDialogAction data-testid={`guide-delete-confirm-${guide.guide_id}`} className="rounded-sm" onClick={remove}>Apagar</AlertDialogAction>
