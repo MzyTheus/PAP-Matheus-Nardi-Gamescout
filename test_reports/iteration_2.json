@@ -1,0 +1,43 @@
+{
+  "summary": "GameScout Iteration 4 backend testing — 34/34 pytest tests PASSED (100%) against the public preview URL. Covered every requested feature: DELETE /api/friends (cancel-pending, reject-incoming, remove-accepted, 404 on nothing), POST /api/users/me/avatar (PNG accepted, returns data URL, persists), avatar MIME rejection (text/plain → 400), oversize rejection (>1.5 MB → 413), avatar/picture propagation to denormalized review.user_picture via PATCH /users/me, GET /api/games/top (Bayesian-weighted: scores sorted desc, all rating_count>=5, top items have rating>=70 = no low-count outliers, genre+platform filters honoured), PATCH/DELETE on /reviews/{id} (owner OK, non-owner 403, complete-flag recomputed), PATCH/DELETE on /guides/{id} (owner-only with 403 for others), PATCH/DELETE on /help-requests/{id} and replies (owner/author-only), and catalog ≥850 (actual=900) with all 6 requested franchises (Resident Evil, FNAF, Minecraft, Terraria, No Man's Sky, Dead by Daylight) returned via search.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration4.py",
+    "/app/test_reports/pytest/iteration4_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now 1245 lines — well past the 700-line threshold. Should be split into routers/ (auth, users, games, reviews, guides, help, friends, admin) for maintainability.",
+    "Review-creation, help-list, featured, user_reviews and list_guides all repeat the same 'coerce datetime → isoformat' loop. Extract `_iso(d)` helper.",
+    "PATCH /reviews/{id} requires the FULL ReviewIn payload (because the model is reused). Partial updates therefore have to re-send all fields, otherwise unset fields will overwrite existing data with None. Consider a separate `ReviewPatchIn` with all fields Optional to support genuine partial updates.",
+    "PATCH /guides and PATCH /help-requests have the same partial-update pitfall (re-uses Create model).",
+    "PATCH /reviews/{id} does NOT recompute or refund/award points if a previously-incomplete review becomes complete (or vice-versa). Today the +25/+50 award is granted only on initial create. If users edit a quick rating into a complete review later they get nothing extra — possibly intentional but worth confirming with PM.",
+    "Avatar upload reads the entire body into memory before checking size — for a 100 MB upload the worker still allocates 100 MB. Add Content-Length pre-check or use SpooledTemporaryFile/streaming-with-cap.",
+    "propagate_user_changes is fired on every PATCH /users/me even when only `bio` or `social` changed. It probably re-writes user_picture/user_name everywhere. Worth narrowing the propagated keys to the ones that actually changed and that are denormalized downstream (name + picture).",
+    "GET /games/top has no caching despite running an aggregation over up to 900 docs on every call. A simple in-memory TTL cache (or precompute on startup/refresh) would help.",
+    "DELETE /friends/{id} is idempotent in semantics but returns 404 when nothing exists. Consider 204 to make client UX simpler (the test confirms current behaviour is 404).",
+    "Bayesian formula uses M=70, C=50 baked in — fine, but should be class-level constants (or env-tunable) so the prior can be changed without redeploy.",
+    "All endpoints use cookie-based auth correctly; no _id leaked in any sampled response."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration4.py (new — 34 pytest tests)"
+  ],
+  "success_rate": {
+    "backend": "100% (34/34)",
+    "frontend": "not tested (backend-only request)"
+  },
+  "test_credentials": "Admin admin@gamescout.pt / admin123 (verified). Three ephemeral TEST_i4_<role>_<run>@gamescout.pt / tester123 users created per run (user_a, user_b, user_c) to test ownership/friendship flows without lockout collisions.",
+  "seed_data_creation": "Per-run: 3 registered TEST_ users, 1 admin guide on 'Elden Ring' (created+patched+deleted), ~5 reviews across Minecraft/Terraria/No-Man-Sky/Dead-by-Daylight/FNAF (created/patched/deleted), 1 help-request thread (created/replied/patched/deleted). All identifiers prefixed TEST_ for cleanup. No leftover data persists beyond what the existing iteration_1 suite already produces.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Catalog now uses IGDB IDs as game_id (e.g. 'igdb-119133' for Elden Ring) — DO NOT hardcode legacy slugs like 'elden-ring' or 'minecraft' in tests; resolve via GET /api/games?q=<title>&limit=1 and use the returned game_id (helper _resolve() in test_iteration4.py does exactly this). Catalog total = 900 games. Bayesian top works as spec'd (sorted desc, rating_count>=5 floor, no low-count outliers). Avatar upload accepts JPG/PNG/WEBP/GIF up to 1.5 MB and propagates to denormalized user_picture across reviews/guides/help via propagate_user_changes(). Iteration 1's route-ordering bug (/users/search shadowed by /users/{user_id}) is FIXED — search route now at line 645, before the path-param route at line 654. Brute-force lockout is per (IP+email) so reusing the same TEST email across many runs may eventually lock out — the suite uses a uuid-suffixed email per run to avoid this.",
+  "rca of the issue": "No bugs found in iteration 4. Initial run had two transient ReadTimeout errors on /games and /games/meta when the server was under load (likely IGDB import / Claude translation tasks running). After bumping those two specific timeouts to 60 s the suite is fully green. The original review-CRUD tests also failed initially because they hardcoded legacy slugs (minecraft, elden-ring, terraria, etc.) that no longer exist in the iteration-4 catalog (which uses 'igdb-<id>' slugs); resolved by adding a _resolve(query) helper that looks up the first matching game_id via the public /api/games?q= endpoint."
+}

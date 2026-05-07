@@ -20,6 +20,7 @@ import GuideForm from "@/pages/GuideForm";
 import HelpRequests from "@/pages/HelpRequests";
 import Friends from "@/pages/Friends";
 import Discover from "@/pages/Discover";
+import TopGames from "@/pages/TopGames";
 
 function ShellLayout({ children }) {
   return (
@@ -62,6 +63,7 @@ function AppRouter() {
             <Routes>
               <Route path="/" element={<Home />} />
               <Route path="/jogos" element={<GamesCatalog />} />
+              <Route path="/top" element={<TopGames />} />
               <Route path="/jogos/:gameId" element={<GameDetail />} />
               <Route path="/descobrir" element={<ProtectedRoute><Discover /></ProtectedRoute>} />
               <Route path="/jogos/:gameId/avaliar" element={<ProtectedRoute><ReviewForm /></ProtectedRoute>} />

@@ -147,6 +147,10 @@ class HelpRequestIn(BaseModel):
     kind: Literal["dica", "jogar-junto", "ajuda"] = "ajuda"
 
 
+class HelpReplyIn(BaseModel):
+    content: str = Field(min_length=2)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -620,6 +624,24 @@ async def update_me(payload: ProfileUpdateIn, user: dict = Depends(get_current_u
     return out
 
 
+@api.post("/users/me/avatar")
+async def upload_avatar(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    """Upload an image as the user's avatar. Stored as data URL in user.picture."""
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(400, "Apenas imagens são permitidas")
+    if file.content_type not in ("image/jpeg", "image/png", "image/webp", "image/gif"):
+        raise HTTPException(400, "Formato não suportado (use JPG, PNG, WEBP ou GIF)")
+    data = await file.read()
+    if len(data) > 1_500_000:
+        raise HTTPException(413, "Imagem demasiado grande (máx 1.5 MB)")
+    import base64
+    b64 = base64.b64encode(data).decode("ascii")
+    data_url = f"data:{file.content_type};base64,{b64}"
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"picture": data_url}})
+    await propagate_user_changes(user["user_id"], {"picture": data_url})
+    return {"picture": data_url}
+
+
 @api.get("/users/search")
 async def search_users(q: str = Query(min_length=2), user: dict = Depends(get_current_user)):
     cur = db.users.find(
@@ -734,6 +756,38 @@ async def discover(user: dict = Depends(get_current_user)):
 # ---------------------------------------------------------------------------
 # Games
 # ---------------------------------------------------------------------------
+@api.get("/games/top")
+async def top_games(limit: int = 100, genre: Optional[str] = None, platform: Optional[str] = None):
+    """Top games using a Bayesian-weighted score (rating × confidence by review count).
+    Formula: score = (n*R + C*M) / (n + C)
+      n = rating_count (IGDB), R = rating (0-100), C = prior weight (50), M = prior mean (70).
+    Returns games sorted by `bayesian_score` desc.
+    """
+    flt = {"rating_count": {"$gte": 5}}
+    if genre: flt["genres"] = genre
+    if platform: flt["platforms"] = platform
+    C = 50.0
+    M = 70.0
+    pipeline = [
+        {"$match": flt},
+        {"$addFields": {
+            "bayesian_score": {
+                "$divide": [
+                    {"$add": [
+                        {"$multiply": ["$rating_count", "$rating"]},
+                        C * M,
+                    ]},
+                    {"$add": ["$rating_count", C]},
+                ]
+            }
+        }},
+        {"$sort": {"bayesian_score": -1}},
+        {"$limit": int(limit)},
+        {"$project": {"_id": 0}},
+    ]
+    return [d async for d in db.games.aggregate(pipeline)]
+
+
 @api.get("/games")
 async def list_games(q: Optional[str] = None, genre: Optional[str] = None, platform: Optional[str] = None, limit: int = 200):
     flt = {}
@@ -887,6 +941,21 @@ async def delete_review(review_id: str, user: dict = Depends(get_current_user)):
     return {"ok": True}
 
 
+@api.patch("/reviews/{review_id}")
+async def update_review(review_id: str, payload: ReviewIn, user: dict = Depends(get_current_user)):
+    r = await db.reviews.find_one({"review_id": review_id})
+    if not r:
+        raise HTTPException(404, "Avaliação não encontrada")
+    if r["user_id"] != user["user_id"] and user.get("role") != "admin":
+        raise HTTPException(403, "Sem permissão")
+    is_complete = _is_review_complete(payload)
+    await db.reviews.update_one(
+        {"review_id": review_id},
+        {"$set": {**payload.model_dump(), "is_complete": is_complete, "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return await db.reviews.find_one({"review_id": review_id}, {"_id": 0})
+
+
 @api.get("/users/{user_id}/reviews")
 async def user_reviews(user_id: str):
     cur = db.reviews.find({"user_id": user_id}, {"_id": 0}).sort("created_at", -1)
@@ -952,6 +1021,79 @@ async def delete_guide(guide_id: str, user: dict = Depends(get_current_user)):
     return {"ok": True}
 
 
+@api.patch("/guides/{guide_id}")
+async def update_guide(guide_id: str, payload: GuideIn, user: dict = Depends(get_current_user)):
+    g = await db.guides.find_one({"guide_id": guide_id})
+    if not g:
+        raise HTTPException(404, "Guia não encontrado")
+    if g["author_id"] != user["user_id"] and user.get("role") != "admin":
+        raise HTTPException(403, "Sem permissão")
+    await db.guides.update_one(
+        {"guide_id": guide_id},
+        {"$set": {**payload.model_dump(), "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return await db.guides.find_one({"guide_id": guide_id}, {"_id": 0})
+
+
+@api.patch("/help-requests/{help_id}")
+async def update_help(help_id: str, payload: HelpRequestIn, user: dict = Depends(get_current_user)):
+    h = await db.help_requests.find_one({"help_id": help_id})
+    if not h:
+        raise HTTPException(404, "Pedido não encontrado")
+    if h["author_id"] != user["user_id"] and user.get("role") != "admin":
+        raise HTTPException(403, "Sem permissão")
+    await db.help_requests.update_one(
+        {"help_id": help_id},
+        {"$set": {**payload.model_dump(), "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return await db.help_requests.find_one({"help_id": help_id}, {"_id": 0})
+
+
+@api.delete("/help-requests/{help_id}")
+async def delete_help(help_id: str, user: dict = Depends(get_current_user)):
+    h = await db.help_requests.find_one({"help_id": help_id})
+    if not h:
+        raise HTTPException(404, "Pedido não encontrado")
+    if h["author_id"] != user["user_id"] and user.get("role") != "admin":
+        raise HTTPException(403, "Sem permissão")
+    await db.help_requests.delete_one({"help_id": help_id})
+    return {"ok": True}
+
+
+@api.patch("/help-requests/{help_id}/replies/{reply_id}")
+async def update_reply(help_id: str, reply_id: str, payload: HelpReplyIn, user: dict = Depends(get_current_user)):
+    h = await db.help_requests.find_one({"help_id": help_id, "replies.reply_id": reply_id})
+    if not h:
+        raise HTTPException(404, "Resposta não encontrada")
+    reply = next((r for r in h.get("replies", []) if r.get("reply_id") == reply_id), None)
+    if not reply:
+        raise HTTPException(404, "Resposta não encontrada")
+    if reply.get("author_id") != user["user_id"] and user.get("role") != "admin":
+        raise HTTPException(403, "Sem permissão")
+    await db.help_requests.update_one(
+        {"help_id": help_id, "replies.reply_id": reply_id},
+        {"$set": {"replies.$.content": payload.content, "replies.$.updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"ok": True}
+
+
+@api.delete("/help-requests/{help_id}/replies/{reply_id}")
+async def delete_reply(help_id: str, reply_id: str, user: dict = Depends(get_current_user)):
+    h = await db.help_requests.find_one({"help_id": help_id, "replies.reply_id": reply_id})
+    if not h:
+        raise HTTPException(404, "Resposta não encontrada")
+    reply = next((r for r in h.get("replies", []) if r.get("reply_id") == reply_id), None)
+    if not reply:
+        raise HTTPException(404, "Resposta não encontrada")
+    if reply.get("author_id") != user["user_id"] and user.get("role") != "admin":
+        raise HTTPException(403, "Sem permissão")
+    await db.help_requests.update_one(
+        {"help_id": help_id},
+        {"$pull": {"replies": {"reply_id": reply_id}}},
+    )
+    return {"ok": True}
+
+
 # ---------------------------------------------------------------------------
 # Help requests
 # ---------------------------------------------------------------------------
@@ -987,10 +1129,6 @@ async def create_help(payload: HelpRequestIn, user: dict = Depends(get_current_u
     await db.help_requests.insert_one(doc)
     doc.pop("_id", None)
     return doc
-
-
-class HelpReplyIn(BaseModel):
-    content: str = Field(min_length=2)
 
 
 @api.post("/help-requests/{help_id}/replies")
@@ -1066,6 +1204,20 @@ async def accept_friend(user_id: str, user: dict = Depends(get_current_user)):
     )
     if res.matched_count == 0:
         raise HTTPException(404, "Pedido não encontrado")
+    return {"ok": True}
+
+
+@api.delete("/friends/{user_id}")
+async def remove_friendship(user_id: str, user: dict = Depends(get_current_user)):
+    """Remove a friendship (accepted) or cancel a pending request, in either direction."""
+    res = await db.friendships.delete_one({
+        "$or": [
+            {"from_user": user["user_id"], "to_user": user_id},
+            {"from_user": user_id, "to_user": user["user_id"]},
+        ]
+    })
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Amizade não encontrada")
     return {"ok": True}
 
 

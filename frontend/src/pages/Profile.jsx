@@ -54,6 +54,16 @@ export default function Profile() {
     finally { setBusy(false); }
   };
 
+  const removeFriendship = async () => {
+    setBusy(true);
+    try {
+      await api.delete(`/friends/${userId}`);
+      toast.success(status === "accepted" ? "Amizade removida" : "Pedido cancelado");
+      load();
+    } catch (e) { toast.error(e.response?.data?.detail || "Erro"); }
+    finally { setBusy(false); }
+  };
+
   if (!profile) return <div className="font-mono text-sm text-muted-foreground py-20 text-center tracking-wider">A CARREGAR…</div>;
 
   const fav = profile.prefs?.favorite_game_doc;
@@ -64,10 +74,30 @@ export default function Profile() {
   if (isMe) {
     actionBtn = <Button asChild variant="outline" data-testid="profile-edit-btn" className="rounded-sm font-mono uppercase tracking-wider"><Link to="/perfil/editar"><Settings size={14} className="mr-2"/> Editar</Link></Button>;
   } else if (me) {
-    if (status === "accepted") actionBtn = <span data-testid="profile-status-friends" className="inline-flex items-center gap-2 px-3 py-2 rounded-sm border border-green-500/40 bg-green-500/10 text-green-500 font-mono text-xs uppercase tracking-wider"><Check size={14}/> Amigos</span>;
-    else if (status === "pending_sent") actionBtn = <span data-testid="profile-status-pending" className="inline-flex items-center gap-2 px-3 py-2 rounded-sm border border-border text-muted-foreground font-mono text-xs uppercase tracking-wider"><Clock size={14}/> Pedido enviado</span>;
-    else if (status === "pending_received") actionBtn = <Button data-testid="profile-accept-btn" disabled={busy} onClick={acceptFriend} className="rounded-sm font-mono uppercase tracking-wider"><Check size={14} className="mr-2"/> Aceitar pedido</Button>;
-    else actionBtn = <Button data-testid="profile-add-friend" disabled={busy} onClick={sendFriendRequest} className="rounded-sm font-mono uppercase tracking-wider"><UserPlus size={14} className="mr-2"/> Adicionar amigo</Button>;
+    if (status === "accepted") {
+      actionBtn = (
+        <div className="flex flex-col gap-2">
+          <span data-testid="profile-status-friends" className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-sm border border-green-500/40 bg-green-500/10 text-green-500 font-mono text-xs uppercase tracking-wider"><Check size={14}/> Amigos</span>
+          <Button variant="outline" data-testid="profile-remove-friend" disabled={busy} onClick={removeFriendship} className="rounded-sm font-mono uppercase tracking-wider text-destructive border-destructive/40 hover:bg-destructive/10"><X size={14} className="mr-2"/> Remover amizade</Button>
+        </div>
+      );
+    } else if (status === "pending_sent") {
+      actionBtn = (
+        <div className="flex flex-col gap-2">
+          <span data-testid="profile-status-pending" className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-sm border border-border text-muted-foreground font-mono text-xs uppercase tracking-wider"><Clock size={14}/> Pedido enviado</span>
+          <Button variant="outline" data-testid="profile-cancel-request" disabled={busy} onClick={removeFriendship} className="rounded-sm font-mono uppercase tracking-wider"><X size={14} className="mr-2"/> Cancelar</Button>
+        </div>
+      );
+    } else if (status === "pending_received") {
+      actionBtn = (
+        <div className="flex flex-col gap-2">
+          <Button data-testid="profile-accept-btn" disabled={busy} onClick={acceptFriend} className="rounded-sm font-mono uppercase tracking-wider"><Check size={14} className="mr-2"/> Aceitar pedido</Button>
+          <Button variant="outline" data-testid="profile-reject-btn" disabled={busy} onClick={removeFriendship} className="rounded-sm font-mono uppercase tracking-wider text-destructive border-destructive/40"><X size={14} className="mr-2"/> Recusar</Button>
+        </div>
+      );
+    } else {
+      actionBtn = <Button data-testid="profile-add-friend" disabled={busy} onClick={sendFriendRequest} className="rounded-sm font-mono uppercase tracking-wider"><UserPlus size={14} className="mr-2"/> Adicionar amigo</Button>;
+    }
   }
 
   return (

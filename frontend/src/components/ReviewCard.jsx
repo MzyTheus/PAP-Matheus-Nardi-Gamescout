@@ -1,10 +1,29 @@
-import { Link } from "react-router-dom";
-import { Star, ThumbsUp, ThumbsDown, Clock } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
+import { Star, ThumbsUp, ThumbsDown, Clock, MoreVertical, Edit2, Trash2 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar";
 import { PLATFORM_LABEL } from "../lib/game-data";
 import { cacheBust } from "../lib/format";
+import { useAuth } from "../lib/auth-context";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "./ui/alert-dialog";
+import { api } from "../lib/api";
+import { toast } from "sonner";
+import { useState } from "react";
 
-export default function ReviewCard({ review, showGame = false }) {
+export default function ReviewCard({ review, showGame = false, onChanged }) {
+  const { user } = useAuth();
+  const nav = useNavigate();
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const isOwner = user && (user.user_id === review.user_id || user.role === "admin");
+
+  const onDelete = async () => {
+    try {
+      await api.delete(`/reviews/${review.review_id}`);
+      toast.success("Avaliação removida");
+      onChanged && onChanged();
+    } catch (e) { toast.error(e.response?.data?.detail || "Erro"); }
+  };
+
   return (
     <article data-testid={`review-card-${review.review_id}`} className="gs-card p-5 space-y-3">
       <div className="flex items-start justify-between gap-3">
@@ -20,9 +39,26 @@ export default function ReviewCard({ review, showGame = false }) {
             </div>
           </div>
         </Link>
-        <div className="flex items-center gap-1 px-2 py-1 border border-primary/40 bg-primary/10 rounded-sm">
-          <Star size={14} className="fill-primary text-primary" />
-          <span className="font-mono font-bold">{review.rating}/10</span>
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 px-2 py-1 border border-primary/40 bg-primary/10 rounded-sm">
+            <Star size={14} className="fill-primary text-primary" />
+            <span className="font-mono font-bold">{review.rating}/10</span>
+          </div>
+          {isOwner && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button data-testid={`review-menu-${review.review_id}`} className="p-1 rounded-sm hover:bg-muted text-muted-foreground"><MoreVertical size={16}/></button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="rounded-sm">
+                <DropdownMenuItem data-testid={`review-edit-${review.review_id}`} onClick={() => nav(`/jogos/${review.game_id}/avaliar?edit=1`)}>
+                  <Edit2 size={14} className="mr-2"/> Editar
+                </DropdownMenuItem>
+                <DropdownMenuItem data-testid={`review-delete-${review.review_id}`} className="text-destructive focus:text-destructive" onClick={() => setConfirmOpen(true)}>
+                  <Trash2 size={14} className="mr-2"/> Apagar
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </div>
       </div>
 
@@ -63,6 +99,19 @@ export default function ReviewCard({ review, showGame = false }) {
           </div>
         )}
       </div>
+
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent className="rounded-sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Apagar avaliação?</AlertDialogTitle>
+            <AlertDialogDescription>Esta ação não pode ser revertida.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="rounded-sm">Cancelar</AlertDialogCancel>
+            <AlertDialogAction data-testid={`review-delete-confirm-${review.review_id}`} className="rounded-sm" onClick={onDelete}>Apagar</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </article>
   );
 }

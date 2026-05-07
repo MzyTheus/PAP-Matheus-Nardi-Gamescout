@@ -5,7 +5,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
-import { Search, UserPlus, Check, Users } from "lucide-react";
+import { Search, UserPlus, Check, Users, UserMinus } from "lucide-react";
 
 export default function Friends() {
   const [friends, setFriends] = useState([]);
@@ -106,16 +106,31 @@ export default function Friends() {
         ) : (
           <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-3">
             {friends.map((u) => (
-              <Link key={u.user_id} to={`/perfil/${u.user_id}`} className="gs-card p-4 flex items-center gap-3">
-                <Avatar className="h-10 w-10 rounded-sm">
-                  <AvatarImage src={u.picture} />
-                  <AvatarFallback className="rounded-sm bg-primary text-primary-foreground font-mono">{(u.name || "U").slice(0,2).toUpperCase()}</AvatarFallback>
-                </Avatar>
-                <div>
-                  <div className="font-semibold">{u.name}</div>
-                  <div className="font-mono text-[10px] uppercase text-muted-foreground tracking-wider">{u.points || 0} pts</div>
-                </div>
-              </Link>
+              <div key={u.user_id} className="gs-card p-4 flex items-center gap-3">
+                <Link to={`/perfil/${u.user_id}`} className="flex items-center gap-3 flex-1 min-w-0">
+                  <Avatar className="h-10 w-10 rounded-sm">
+                    <AvatarImage src={u.picture} />
+                    <AvatarFallback className="rounded-sm bg-primary text-primary-foreground font-mono">{(u.name || "U").slice(0,2).toUpperCase()}</AvatarFallback>
+                  </Avatar>
+                  <div className="min-w-0">
+                    <div className="font-semibold truncate">{u.name}</div>
+                    <div className="font-mono text-[10px] uppercase text-muted-foreground tracking-wider">{u.points || 0} pts</div>
+                  </div>
+                </Link>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  data-testid={`unfriend-${u.user_id}`}
+                  onClick={async () => {
+                    try { await api.delete(`/friends/${u.user_id}`); toast.success("Amizade removida"); load(); }
+                    catch (e) { toast.error(e.response?.data?.detail || "Erro"); }
+                  }}
+                  className="rounded-sm text-destructive border-destructive/40 hover:bg-destructive/10"
+                  title="Remover amizade"
+                >
+                  <UserMinus size={14} />
+                </Button>
+              </div>
             ))}
           </div>
         )}

@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "@/lib/api";
+import { useAuth } from "@/lib/auth-context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Switch } from "@/components/ui/switch";
 import StarRating from "@/components/StarRating";
 import { PLATFORMS } from "@/lib/game-data";
 import { toast } from "sonner";
@@ -18,21 +18,43 @@ const CategoryRow = ({ label, value, set, testId }) => (
   </div>
 );
 
+const EMPTY = {
+  rating: 0, hours_played: "",
+  graphics: 0, story: 0, tutorial: 0, gameplay: 0,
+  recommends: null, platform: "", note: "",
+};
+
 export default function ReviewForm() {
   const { gameId } = useParams();
   const nav = useNavigate();
+  const { user } = useAuth();
   const [game, setGame] = useState(null);
-  const [form, setForm] = useState({
-    rating: 0,
-    hours_played: "",
-    graphics: 0, story: 0, tutorial: 0, gameplay: 0,
-    recommends: null,
-    platform: "",
-    note: "",
-  });
+  const [form, setForm] = useState(EMPTY);
+  const [existingReviewId, setExistingReviewId] = useState(null);
   const [submitting, setSubmitting] = useState(false);
 
-  useEffect(() => { api.get(`/games/${gameId}`).then((r) => setGame(r.data)); }, [gameId]);
+  useEffect(() => {
+    api.get(`/games/${gameId}`).then((r) => setGame(r.data));
+    if (user) {
+      api.get(`/games/${gameId}/reviews`).then((r) => {
+        const mine = r.data.find((rv) => rv.user_id === user.user_id);
+        if (mine) {
+          setExistingReviewId(mine.review_id);
+          setForm({
+            rating: mine.rating || 0,
+            hours_played: mine.hours_played ?? "",
+            graphics: mine.graphics || 0,
+            story: mine.story || 0,
+            tutorial: mine.tutorial || 0,
+            gameplay: mine.gameplay || 0,
+            recommends: mine.recommends ?? null,
+            platform: mine.platform || "",
+            note: mine.note || "",
+          });
+        }
+      });
+    }
+  }, [gameId, user]);
 
   const isComplete =
     form.rating > 0 && form.hours_played !== "" && form.graphics > 0 && form.story > 0 &&
@@ -46,12 +68,15 @@ export default function ReviewForm() {
     try {
       const payload = { ...form };
       payload.hours_played = form.hours_played === "" ? null : Number(form.hours_played);
-      ["graphics", "story", "tutorial", "gameplay"].forEach((k) => {
-        if (!payload[k]) payload[k] = null;
-      });
+      ["graphics", "story", "tutorial", "gameplay"].forEach((k) => { if (!payload[k]) payload[k] = null; });
       if (!payload.platform) payload.platform = null;
-      const { data } = await api.post(`/games/${gameId}/reviews`, payload);
-      toast.success(data.is_complete ? "Avaliação completa! +50 pts" : "Avaliação publicada (+25 pts)");
+      if (existingReviewId) {
+        await api.patch(`/reviews/${existingReviewId}`, payload);
+        toast.success("Avaliação atualizada");
+      } else {
+        const { data } = await api.post(`/games/${gameId}/reviews`, payload);
+        toast.success(data.is_complete ? "Avaliação completa! +50 pts" : "Avaliação publicada (+25 pts)");
+      }
       nav(`/jogos/${gameId}`);
     } catch (err) {
       toast.error(err.response?.data?.detail || "Erro ao publicar");
@@ -67,7 +92,7 @@ export default function ReviewForm() {
       <Link to={`/jogos/${gameId}`} className="inline-flex items-center gap-2 font-mono text-xs uppercase tracking-wider text-muted-foreground hover:text-primary"><ArrowLeft size={14}/> Voltar a {game.title}</Link>
 
       <div>
-        <div className="gs-overline">Avaliar</div>
+        <div className="gs-overline">{existingReviewId ? "Editar avaliação" : "Avaliar"}</div>
         <h1 className="font-heading font-black text-3xl uppercase tracking-tight mt-1">{game.title}</h1>
       </div>
 
@@ -119,7 +144,9 @@ export default function ReviewForm() {
         </section>
 
         <div className="flex justify-end">
-          <Button type="submit" disabled={submitting || !form.rating} data-testid="review-submit" className="rounded-sm font-mono uppercase tracking-wider">{submitting ? "A enviar…" : "Publicar avaliação"}</Button>
+          <Button type="submit" disabled={submitting || !form.rating} data-testid="review-submit" className="rounded-sm font-mono uppercase tracking-wider">
+            {submitting ? "A enviar…" : existingReviewId ? "Atualizar avaliação" : "Publicar avaliação"}
+          </Button>
         </div>
       </form>
     </div>

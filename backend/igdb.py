@@ -152,6 +152,7 @@ def _normalise(item: Dict[str, Any]) -> Dict[str, Any] | None:
         "description": (item.get("summary") or "").strip()[:1500],
         "igdb_id": item["id"],
         "rating": round(item.get("total_rating") or 0, 1),
+        "rating_count": item.get("total_rating_count") or 0,
         "imported_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -184,7 +185,37 @@ def fetch_games(client_id: str, client_secret: str, total: int = 500) -> List[Di
         f"{FIELDS} {base} & genres = (4) & total_rating_count >= 20; sort total_rating desc; limit 40;",
         # Sports/Racing
         f"{FIELDS} {base} & genres = (14,10) & total_rating_count >= 20; sort total_rating desc; limit 50;",
+        # Survival/horror keyword themes (Survival Horror theme = 19)
+        f"{FIELDS} {base} & themes = (19) & total_rating_count >= 5; sort total_rating desc; limit 100;",
+        # Open world theme (38) — Minecraft, Terraria, No Man's Sky, etc
+        f"{FIELDS} {base} & themes = (38) & total_rating_count >= 30; sort total_rating desc; limit 80;",
     ]
+
+    # Specific franchise / popular game searches by name
+    franchise_terms = [
+        "Resident Evil", "Five Nights at Freddy", "Minecraft", "Terraria",
+        "No Man's Sky", "Dead by Daylight", "Outlast", "Amnesia", "Silent Hill",
+        "Dark Souls", "Bloodborne", "Sekiro", "Final Fantasy", "Halo",
+        "Call of Duty", "Battlefield", "Fallout", "Skyrim", "Mass Effect",
+        "Borderlands", "Assassin's Creed", "Far Cry", "Tomb Raider",
+        "Mortal Kombat", "Street Fighter", "Tekken", "Devil May Cry",
+        "Metal Gear", "Bioshock", "Portal", "Half-Life", "Doom",
+        "Subnautica", "Stardew Valley", "Among Us", "Fall Guys",
+        "Phasmophobia", "Lethal Company", "It Takes Two", "Hollow Knight",
+        "Cuphead", "Undertale", "Celeste", "Hades", "Slay the Spire",
+        "Dying Light", "Dishonored", "Prey", "Control", "Death Stranding",
+        "Genshin Impact", "Honkai", "Apex Legends", "Overwatch", "Rainbow Six",
+        "Rocket League", "Forza", "Gran Turismo", "F1", "NBA 2K",
+        "Pokémon", "Kirby", "Mario", "Sonic", "Animal Crossing",
+        "Splatoon", "Smash Bros", "Metroid", "Diablo", "Path of Exile",
+    ]
+
+    franchise_queries = [
+        f"{FIELDS} {base} & name ~ *\"{name}\"*; limit 12;"
+        for name in franchise_terms
+    ]
+    # Put franchise searches FIRST so they always make it into the import
+    queries = franchise_queries + queries
 
     seen: set = set()
     out: List[Dict[str, Any]] = []

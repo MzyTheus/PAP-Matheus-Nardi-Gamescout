@@ -3,10 +3,17 @@ import { Link, useParams } from "react-router-dom";
 import { api } from "@/lib/api";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
+import { useState } from "react";
 import ReviewCard from "@/components/ReviewCard";
 import { useAuth } from "@/lib/auth-context";
-import { Star, Calendar, Cpu, BookOpen, MessageCircleQuestion, ArrowLeft } from "lucide-react";
+import { Star, Calendar, Cpu, BookOpen, MessageCircleQuestion, ArrowLeft, Trash2, MoreVertical, Edit2 } from "lucide-react";
 import { PLATFORM_LABEL } from "@/lib/game-data";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { toast } from "sonner";
 
 const CATEGORY_LABEL = {
   "dica": "Dica",
@@ -28,6 +35,12 @@ export default function GameDetail() {
     api.get(`/games/${gameId}/reviews`).then((r) => setReviews(r.data));
     api.get(`/games/${gameId}/guides`).then((r) => setGuides(r.data));
   }, [gameId]);
+
+  const load = () => {
+    api.get(`/games/${gameId}`).then((r) => setGame(r.data));
+    api.get(`/games/${gameId}/reviews`).then((r) => setReviews(r.data));
+    api.get(`/games/${gameId}/guides`).then((r) => setGuides(r.data));
+  };
 
   if (!game) return <div className="font-mono text-sm text-muted-foreground py-20 text-center tracking-wider">A CARREGAR…</div>;
 
@@ -114,7 +127,7 @@ export default function GameDetail() {
               <div className="font-mono text-sm text-muted-foreground mt-2">Partilha a tua opinião e ganha pontos.</div>
             </div>
           ) : (
-            reviews.map((r) => <ReviewCard key={r.review_id} review={r} />)
+            reviews.map((r) => <ReviewCard key={r.review_id} review={r} onChanged={load} />)
           )}
         </TabsContent>
 
@@ -144,5 +157,64 @@ export default function GameDetail() {
         </TabsContent>
       </Tabs>
     </div>
+  );
+}
+o"); }
+  };
+
+  if (editing) {
+    return (
+      <article className="gs-card p-5 space-y-3">
+        <Select value={form.category} onValueChange={(v) => setForm({ ...form, category: v })}>
+          <SelectTrigger className="rounded-sm w-48"><SelectValue/></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="dica">Dica</SelectItem>
+            <SelectItem value="tutorial">Tutorial</SelectItem>
+            <SelectItem value="como-zerar">Como zerar</SelectItem>
+            <SelectItem value="estrategia">Estratégia</SelectItem>
+            <SelectItem value="macete">Macete</SelectItem>
+          </SelectContent>
+        </Select>
+        <Input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} className="rounded-sm font-heading text-lg" />
+        <Textarea rows={6} value={form.content} onChange={(e) => setForm({ ...form, content: e.target.value })} className="rounded-sm" />
+        <div className="flex gap-2 justify-end">
+          <Button variant="outline" onClick={() => setEditing(false)} className="rounded-sm">Cancelar</Button>
+          <Button data-testid={`guide-save-${guide.guide_id}`} disabled={saving} onClick={save} className="rounded-sm">Guardar</Button>
+        </div>
+      </article>
+    );
+  }
+
+  return (
+    <article data-testid={`guide-${guide.guide_id}`} className="gs-card p-5 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-[10px] uppercase tracking-widest text-primary">{guide.category}</span>
+          <span className="font-mono text-[10px] text-muted-foreground">por {guide.author_name}</span>
+        </div>
+        {isOwner && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button data-testid={`guide-menu-${guide.guide_id}`} className="p-1 rounded-sm hover:bg-muted text-muted-foreground"><MoreVertical size={16}/></button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="rounded-sm">
+              <DropdownMenuItem data-testid={`guide-edit-${guide.guide_id}`} onClick={() => setEditing(true)}><Edit2 size={14} className="mr-2"/> Editar</DropdownMenuItem>
+              <DropdownMenuItem data-testid={`guide-delete-${guide.guide_id}`} className="text-destructive focus:text-destructive" onClick={() => setConfirm(true)}><Trash2 size={14} className="mr-2"/> Apagar</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
+      </div>
+      <h3 className="font-heading text-xl font-bold tracking-tight">{guide.title}</h3>
+      <p className="text-sm leading-relaxed whitespace-pre-line text-foreground/90">{guide.content}</p>
+      <AlertDialog open={confirm} onOpenChange={setConfirm}>
+        <AlertDialogContent className="rounded-sm">
+          <AlertDialogHeader><AlertDialogTitle>Apagar guia?</AlertDialogTitle><AlertDialogDescription>Esta ação não pode ser revertida.</AlertDialogDescription></AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="rounded-sm">Cancelar</AlertDialogCancel>
+            <AlertDialogAction data-testid={`guide-delete-confirm-${guide.guide_id}`} className="rounded-sm" onClick={remove}>Apagar</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </article>
   );
 }

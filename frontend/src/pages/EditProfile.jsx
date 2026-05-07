@@ -8,8 +8,11 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { PLATFORMS } from "@/lib/game-data";
 import GamePicker from "@/components/GamePicker";
+import AvatarPicker from "@/components/AvatarPicker";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { cacheBust } from "@/lib/format";
 import { toast } from "sonner";
-import { Save, ArrowLeft } from "lucide-react";
+import { Save, ArrowLeft, Camera } from "lucide-react";
 
 export default function EditProfile() {
   const { user, refresh } = useAuth();
@@ -17,6 +20,7 @@ export default function EditProfile() {
   const [form, setForm] = useState(null);
   const [favGame, setFavGame] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [picOpen, setPicOpen] = useState(false);
 
   useEffect(() => {
     if (user) {
@@ -28,7 +32,6 @@ export default function EditProfile() {
         social: { discord: "", tiktok: "", instagram: "", twitch: "", ...(user.social || {}) },
         prefs: { favorite_game: "", favorite_game_id: null, pc_specs: "", platforms: [], ...prefs },
       });
-      // Load favorite game doc if id exists
       if (prefs.favorite_game_id) {
         api.get(`/games/${prefs.favorite_game_id}`).then((r) => {
           setFavGame({ game_id: r.data.game_id, title: r.data.title, cover: r.data.cover });
@@ -51,7 +54,9 @@ export default function EditProfile() {
     setSaving(true);
     try {
       const payload = {
-        ...form,
+        name: form.name,
+        bio: form.bio,
+        social: form.social,
         prefs: {
           ...form.prefs,
           favorite_game: favGame?.title || null,
@@ -69,6 +74,8 @@ export default function EditProfile() {
     }
   };
 
+  const avatarSrc = form.picture ? cacheBust(form.picture, (form.picture || "").length) : null;
+
   return (
     <div className="max-w-3xl mx-auto space-y-8">
       <Link to={`/perfil/${user.user_id}`} className="inline-flex items-center gap-2 font-mono text-xs uppercase tracking-wider text-muted-foreground hover:text-primary"><ArrowLeft size={14}/> Voltar</Link>
@@ -80,14 +87,30 @@ export default function EditProfile() {
       <form onSubmit={onSave} className="space-y-8">
         <section className="gs-card p-6 space-y-4">
           <h2 className="font-mono uppercase text-xs tracking-widest text-primary">Identidade</h2>
-          <div className="grid md:grid-cols-2 gap-4">
-            <div className="space-y-1.5">
-              <Label className="font-mono uppercase text-[11px] tracking-wider">Nome</Label>
-              <Input data-testid="edit-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="rounded-sm" />
+          <div className="flex items-start gap-5">
+            <div className="relative">
+              <Avatar className="h-20 w-20 rounded-sm border-2 border-primary">
+                <AvatarImage src={avatarSrc} key={avatarSrc} />
+                <AvatarFallback className="rounded-sm bg-primary text-primary-foreground font-mono text-xl">{(form.name || "U").slice(0,2).toUpperCase()}</AvatarFallback>
+              </Avatar>
+              <Button
+                type="button"
+                size="sm"
+                data-testid="open-avatar-picker"
+                onClick={() => setPicOpen(true)}
+                className="absolute -bottom-2 -right-2 h-8 w-8 p-0 rounded-sm"
+              >
+                <Camera size={14} />
+              </Button>
             </div>
-            <div className="space-y-1.5">
-              <Label className="font-mono uppercase text-[11px] tracking-wider">URL da foto de perfil</Label>
-              <Input data-testid="edit-picture" placeholder="https://..." value={form.picture} onChange={(e) => setForm({ ...form, picture: e.target.value })} className="rounded-sm" />
+            <div className="flex-1 space-y-3">
+              <div className="space-y-1.5">
+                <Label className="font-mono uppercase text-[11px] tracking-wider">Nome</Label>
+                <Input data-testid="edit-name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="rounded-sm" />
+              </div>
+              <Button type="button" variant="outline" size="sm" data-testid="open-avatar-picker-btn" onClick={() => setPicOpen(true)} className="rounded-sm font-mono uppercase tracking-wider text-xs">
+                <Camera size={14} className="mr-2"/> Alterar foto
+              </Button>
             </div>
           </div>
           <div className="space-y-1.5">
@@ -132,6 +155,16 @@ export default function EditProfile() {
           <Button type="submit" disabled={saving} data-testid="edit-save-btn" className="rounded-sm font-mono uppercase tracking-wider"><Save size={14} className="mr-2"/>{saving ? "A guardar…" : "Guardar"}</Button>
         </div>
       </form>
+
+      <AvatarPicker
+        open={picOpen}
+        onOpenChange={setPicOpen}
+        currentUrl={form.picture}
+        onSaved={async (newPic) => {
+          setForm((f) => ({ ...f, picture: newPic }));
+          await refresh();
+        }}
+      />
     </div>
   );
 }
