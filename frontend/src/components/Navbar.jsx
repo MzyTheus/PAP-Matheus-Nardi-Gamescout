@@ -1,5 +1,5 @@
 import { Link, NavLink, useNavigate } from "react-router-dom";
-import { Search, Gamepad2, Users, MessageSquareWarning, LogOut, User as UserIcon, Sun, Moon, Menu } from "lucide-react";
+import { Search, Gamepad2, Users, MessageSquareWarning, LogOut, User as UserIcon, Sun, Moon, Menu, Heart } from "lucide-react";
 import { useState } from "react";
 import { useAuth } from "../lib/auth-context";
 import { useTheme } from "../lib/use-theme";
@@ -75,6 +75,9 @@ export default function Navbar() {
               <DropdownMenuSeparator />
               <DropdownMenuItem data-testid="menu-profile" onClick={() => nav(`/perfil/${user.user_id}`)}>
                 <UserIcon size={14} className="mr-2" /> Meu Perfil
+              </DropdownMenuItem>
+              <DropdownMenuItem data-testid="menu-wishlist" onClick={() => nav("/wishlist")}>
+                <Heart size={14} className="mr-2" /> Wishlist
               </DropdownMenuItem>
               <DropdownMenuItem data-testid="menu-edit" onClick={() => nav("/perfil/editar")}>
                 Editar perfil

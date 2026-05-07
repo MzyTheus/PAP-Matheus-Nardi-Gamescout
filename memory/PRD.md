@@ -24,6 +24,14 @@ Plataforma social de jogos com:
 - Frontend: React Router, AuthContext, Tailwind theme (orange/black-white), Unbounded/Manrope/JetBrains Mono fonts, Shadcn UI
 - All MongoDB queries exclude `_id`. Users use UUID `user_id` field.
 
+## Implemented (2026-05-06 — iteração 5)
+- ✅ **Bug fix**: import duplicado de `useState` em GameDetail.jsx (compile error)
+- ✅ **Wishlist**:
+  - Backend: `POST/DELETE/GET /api/wishlist/{game_id}`, `GET /api/wishlist`, `GET /api/users/{user_id}/wishlist`
+  - User model: campo `wishlist: [game_id]` (lista preservando ordem de inserção via `$addToSet`)
+  - Frontend: botão coração (♥) em todos os GameCards do catálogo, top games, descobrir; toggle no GameDetail; nova página `/wishlist` (própria) e `/wishlist/{userId}` (pública); link no perfil + entrada no menu do utilizador
+  - Profile mostra contagem da wishlist com link
+
 ## Implemented (2026-05-06 — iteração 4)
 - ✅ **Remover amizade** (DELETE /api/friends/{user_id}) — funciona para amizade aceite, pedido enviado (cancelar) e pedido recebido (recusar). UI no Profile e na lista de amigos.
 - ✅ **Upload de avatar** com 2 opções: ficheiro do dispositivo (POST /api/users/me/avatar multipart, máx 1.5MB, JPG/PNG/WEBP/GIF → data URL) OU URL externo (PATCH /api/users/me). Componente `AvatarPicker` com tabs.

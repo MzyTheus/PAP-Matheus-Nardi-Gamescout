@@ -660,7 +660,8 @@ async def get_user_public(user_id: str, request: Request):
     out["rank"] = rank_for_points(out.get("points", 0))
     review_count = await db.reviews.count_documents({"user_id": user_id})
     guide_count = await db.guides.count_documents({"author_id": user_id})
-    out["stats"] = {"reviews": review_count, "guides": guide_count}
+    wishlist_count = len(out.get("wishlist") or [])
+    out["stats"] = {"reviews": review_count, "guides": guide_count, "wishlist": wishlist_count}
     fav_id = (out.get("prefs") or {}).get("favorite_game_id")
     if fav_id:
         g = await db.games.find_one({"game_id": fav_id}, {"_id": 0, "title": 1, "cover": 1, "game_id": 1})
@@ -669,6 +670,51 @@ async def get_user_public(user_id: str, request: Request):
     viewer = await get_current_user_optional(request)
     out["friendship_status"] = await get_friendship_status(viewer["user_id"], user_id) if viewer else "none"
     return out
+
+
+@api.get("/wishlist")
+async def get_my_wishlist(user: dict = Depends(get_current_user)):
+    ids = user.get("wishlist") or []
+    if not ids:
+        return []
+    cur = db.games.find({"game_id": {"$in": ids}}, {"_id": 0})
+    games = {g["game_id"]: g async for g in cur}
+    # preserve original order (newest added last)
+    return [games[i] for i in ids if i in games]
+
+
+@api.post("/wishlist/{game_id}")
+async def add_to_wishlist(game_id: str, user: dict = Depends(get_current_user)):
+    g = await db.games.find_one({"game_id": game_id}, {"_id": 0, "game_id": 1})
+    if not g:
+        raise HTTPException(404, "Jogo não encontrado")
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$addToSet": {"wishlist": game_id}},
+    )
+    return {"ok": True, "in_wishlist": True}
+
+
+@api.delete("/wishlist/{game_id}")
+async def remove_from_wishlist(game_id: str, user: dict = Depends(get_current_user)):
+    await db.users.update_one(
+        {"user_id": user["user_id"]},
+        {"$pull": {"wishlist": game_id}},
+    )
+    return {"ok": True, "in_wishlist": False}
+
+
+@api.get("/users/{user_id}/wishlist")
+async def get_user_wishlist(user_id: str):
+    u = await db.users.find_one({"user_id": user_id}, {"_id": 0, "wishlist": 1})
+    if not u:
+        raise HTTPException(404, "Utilizador não encontrado")
+    ids = u.get("wishlist") or []
+    if not ids:
+        return []
+    cur = db.games.find({"game_id": {"$in": ids}}, {"_id": 0})
+    games = {g["game_id"]: g async for g in cur}
+    return [games[i] for i in ids if i in games]
 
 
 # ---------------------------------------------------------------------------

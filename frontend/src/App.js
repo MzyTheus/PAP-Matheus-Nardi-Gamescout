@@ -21,6 +21,7 @@ import HelpRequests from "@/pages/HelpRequests";
 import Friends from "@/pages/Friends";
 import Discover from "@/pages/Discover";
 import TopGames from "@/pages/TopGames";
+import Wishlist from "@/pages/Wishlist";
 
 function ShellLayout({ children }) {
   return (
@@ -66,6 +67,8 @@ function AppRouter() {
               <Route path="/top" element={<TopGames />} />
               <Route path="/jogos/:gameId" element={<GameDetail />} />
               <Route path="/descobrir" element={<ProtectedRoute><Discover /></ProtectedRoute>} />
+              <Route path="/wishlist" element={<ProtectedRoute><Wishlist /></ProtectedRoute>} />
+              <Route path="/wishlist/:userId" element={<Wishlist />} />
               <Route path="/jogos/:gameId/avaliar" element={<ProtectedRoute><ReviewForm /></ProtectedRoute>} />
               <Route path="/jogos/:gameId/guia/novo" element={<ProtectedRoute><GuideForm /></ProtectedRoute>} />
               <Route path="/perfil/editar" element={<ProtectedRoute><EditProfile /></ProtectedRoute>} />

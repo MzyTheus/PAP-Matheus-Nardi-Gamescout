@@ -118,6 +118,9 @@ export default function Profile() {
           <div className="flex flex-wrap gap-3 pt-2 font-mono text-xs">
             <span className="text-muted-foreground">Avaliações: <b className="text-foreground">{profile.stats?.reviews ?? 0}</b></span>
             <span className="text-muted-foreground">Guias: <b className="text-foreground">{profile.stats?.guides ?? 0}</b></span>
+            <Link to={`/wishlist/${profile.user_id}`} className="text-muted-foreground hover:text-primary transition-colors">
+              Wishlist: <b className="text-foreground">{profile.stats?.wishlist ?? 0}</b>
+            </Link>
           </div>
         </div>
 

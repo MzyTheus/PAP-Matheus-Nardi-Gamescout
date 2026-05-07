@@ -3,10 +3,9 @@ import { Link, useParams } from "react-router-dom";
 import { api } from "@/lib/api";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import { useState } from "react";
 import ReviewCard from "@/components/ReviewCard";
 import { useAuth } from "@/lib/auth-context";
-import { Star, Calendar, Cpu, BookOpen, MessageCircleQuestion, ArrowLeft, Trash2, MoreVertical, Edit2 } from "lucide-react";
+import { Star, Calendar, Cpu, BookOpen, MessageCircleQuestion, ArrowLeft, Trash2, MoreVertical, Edit2, Heart } from "lucide-react";
 import { PLATFORM_LABEL } from "@/lib/game-data";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
@@ -25,7 +24,7 @@ const CATEGORY_LABEL = {
 
 export default function GameDetail() {
   const { gameId } = useParams();
-  const { user } = useAuth();
+  const { user, refresh } = useAuth();
   const [game, setGame] = useState(null);
   const [reviews, setReviews] = useState([]);
   const [guides, setGuides] = useState([]);
@@ -96,6 +95,28 @@ export default function GameDetail() {
             <Button asChild data-testid="game-review-btn" className="rounded-sm font-mono uppercase tracking-wider"><Link to={`/jogos/${gameId}/avaliar`}>Avaliar este jogo</Link></Button>
             {canCreateGuide && (
               <Button asChild variant="outline" data-testid="game-guide-btn" className="rounded-sm font-mono uppercase tracking-wider"><Link to={`/jogos/${gameId}/guia/novo`}>Criar guia</Link></Button>
+            )}
+            {user && (
+              <Button
+                type="button"
+                variant="outline"
+                data-testid="game-wishlist-toggle"
+                onClick={async () => {
+                  try {
+                    if (user.wishlist?.includes(gameId)) {
+                      await api.delete(`/wishlist/${gameId}`);
+                      toast.success("Removido da wishlist");
+                    } else {
+                      await api.post(`/wishlist/${gameId}`);
+                      toast.success("Adicionado à wishlist");
+                    }
+                    refresh();
+                  } catch (e) { toast.error(e.response?.data?.detail || "Erro"); }
+                }}
+                className={`rounded-sm font-mono uppercase tracking-wider ${user.wishlist?.includes(gameId) ? "border-primary text-primary" : ""}`}
+              >
+                <Heart size={14} className={`mr-2 ${user.wishlist?.includes(gameId) ? "fill-current" : ""}`}/> {user.wishlist?.includes(gameId) ? "Na wishlist" : "Wishlist"}
+              </Button>
             )}
           </div>
         </div>
