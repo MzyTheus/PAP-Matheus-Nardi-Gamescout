@@ -118,6 +118,9 @@ class ReviewIn(BaseModel):
     story: Optional[int] = Field(default=None, ge=1, le=10)
     tutorial: Optional[int] = Field(default=None, ge=1, le=10)
     gameplay: Optional[int] = Field(default=None, ge=1, le=10)
+    audio: Optional[int] = Field(default=None, ge=1, le=10)
+    performance: Optional[int] = Field(default=None, ge=1, le=10)
+    fun: Optional[int] = Field(default=None, ge=1, le=10)
     recommends: Optional[bool] = None
     platform: Optional[str] = None
     note: Optional[str] = ""
@@ -804,34 +807,38 @@ async def discover(user: dict = Depends(get_current_user)):
 # ---------------------------------------------------------------------------
 @api.get("/games/top")
 async def top_games(limit: int = 100, genre: Optional[str] = None, platform: Optional[str] = None):
-    """Top games using a Bayesian-weighted score (rating × confidence by review count).
-    Formula: score = (n*R + C*M) / (n + C)
-      n = rating_count (IGDB), R = rating (0-100), C = prior weight (50), M = prior mean (70).
-    Returns games sorted by `bayesian_score` desc.
+    """Top games using ONLY real on-site reviews (no IGDB inflation).
+    Bayesian-weighted score: (n*R + C*M) / (n + C)
+      n = on-site review count, R = avg of `review.score` (0-10),
+      C = prior weight (5), M = prior mean (7).
+    Games with 0 reviews still appear (score = M = 7) but with site_review_count = 0.
     """
-    flt = {"rating_count": {"$gte": 5}}
+    flt = {}
     if genre: flt["genres"] = genre
     if platform: flt["platforms"] = platform
-    C = 50.0
-    M = 70.0
-    pipeline = [
-        {"$match": flt},
-        {"$addFields": {
-            "bayesian_score": {
-                "$divide": [
-                    {"$add": [
-                        {"$multiply": ["$rating_count", "$rating"]},
-                        C * M,
-                    ]},
-                    {"$add": ["$rating_count", C]},
-                ]
-            }
-        }},
-        {"$sort": {"bayesian_score": -1}},
-        {"$limit": int(limit)},
-        {"$project": {"_id": 0}},
+
+    C = 5.0
+    M = 7.0
+
+    review_pipeline = [
+        {"$group": {"_id": "$game_id", "n": {"$sum": 1}, "avg": {"$avg": "$score"}}},
     ]
-    return [d async for d in db.games.aggregate(pipeline)]
+    review_stats = {}
+    async for d in db.reviews.aggregate(review_pipeline):
+        review_stats[d["_id"]] = (d["n"] or 0, d["avg"] or 0.0)
+
+    cur = db.games.find(flt, {"_id": 0})
+    games = []
+    async for g in cur:
+        n, R = review_stats.get(g["game_id"], (0, 0.0))
+        score = (n * R + C * M) / (n + C)
+        g["site_review_count"] = n
+        g["site_avg_score"] = round(R, 2) if n > 0 else None
+        g["bayesian_score"] = round(score, 2)
+        games.append(g)
+
+    games.sort(key=lambda x: (-x["bayesian_score"], -x["site_review_count"]))
+    return games[: int(limit)]
 
 
 @api.get("/games")
@@ -902,13 +909,12 @@ async def get_game(game_id: str):
     g = await db.games.find_one({"game_id": game_id}, {"_id": 0})
     if not g:
         raise HTTPException(404, "Jogo não encontrado")
-    # rating aggregate
     pipe = [
         {"$match": {"game_id": game_id}},
-        {"$group": {"_id": None, "avg": {"$avg": "$rating"}, "count": {"$sum": 1}}},
+        {"$group": {"_id": None, "avg": {"$avg": "$score"}, "count": {"$sum": 1}}},
     ]
     agg = await db.reviews.aggregate(pipe).to_list(1)
-    g["avg_rating"] = round(agg[0]["avg"], 1) if agg else None
+    g["avg_rating"] = round(agg[0]["avg"], 1) if agg and agg[0]["avg"] is not None else None
     g["review_count"] = agg[0]["count"] if agg else 0
     return g
 
@@ -916,18 +922,28 @@ async def get_game(game_id: str):
 # ---------------------------------------------------------------------------
 # Reviews
 # ---------------------------------------------------------------------------
+REVIEW_CATEGORIES = ("graphics", "story", "tutorial", "gameplay", "audio", "performance", "fun")
+
+
 def _is_review_complete(r: ReviewIn) -> bool:
+    cat_values = [getattr(r, c) for c in REVIEW_CATEGORIES]
     return all([
         r.rating is not None,
         r.hours_played is not None,
-        r.graphics is not None,
-        r.story is not None,
-        r.tutorial is not None,
-        r.gameplay is not None,
+        all(v is not None for v in cat_values),
         r.recommends is not None,
         r.platform,
         r.note and len(r.note.strip()) >= 10,
     ])
+
+
+def _review_score(payload: ReviewIn) -> float:
+    """Final user score = average of (overall rating, mean of filled categories)."""
+    cat_values = [getattr(payload, c) for c in REVIEW_CATEGORIES if getattr(payload, c) is not None]
+    if cat_values:
+        cat_avg = sum(cat_values) / len(cat_values)
+        return round((payload.rating + cat_avg) / 2, 2)
+    return float(payload.rating)
 
 
 @api.get("/games/{game_id}/reviews")
@@ -995,9 +1011,10 @@ async def update_review(review_id: str, payload: ReviewIn, user: dict = Depends(
     if r["user_id"] != user["user_id"] and user.get("role") != "admin":
         raise HTTPException(403, "Sem permissão")
     is_complete = _is_review_complete(payload)
+    score = _review_score(payload)
     await db.reviews.update_one(
         {"review_id": review_id},
-        {"$set": {**payload.model_dump(), "is_complete": is_complete, "updated_at": datetime.now(timezone.utc).isoformat()}},
+        {"$set": {**payload.model_dump(), "is_complete": is_complete, "score": score, "updated_at": datetime.now(timezone.utc).isoformat()}},
     )
     return await db.reviews.find_one({"review_id": review_id}, {"_id": 0})
 

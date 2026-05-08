@@ -20,7 +20,7 @@ const CategoryRow = ({ label, value, set, testId }) => (
 
 const EMPTY = {
   rating: 0, hours_played: "",
-  graphics: 0, story: 0, tutorial: 0, gameplay: 0,
+  graphics: 0, story: 0, tutorial: 0, gameplay: 0, audio: 0, performance: 0, fun: 0,
   recommends: null, platform: "", note: "",
 };
 
@@ -47,6 +47,9 @@ export default function ReviewForm() {
             story: mine.story || 0,
             tutorial: mine.tutorial || 0,
             gameplay: mine.gameplay || 0,
+            audio: mine.audio || 0,
+            performance: mine.performance || 0,
+            fun: mine.fun || 0,
             recommends: mine.recommends ?? null,
             platform: mine.platform || "",
             note: mine.note || "",
@@ -58,8 +61,15 @@ export default function ReviewForm() {
 
   const isComplete =
     form.rating > 0 && form.hours_played !== "" && form.graphics > 0 && form.story > 0 &&
-    form.tutorial > 0 && form.gameplay > 0 && form.recommends !== null && form.platform &&
+    form.tutorial > 0 && form.gameplay > 0 && form.audio > 0 && form.performance > 0 && form.fun > 0 &&
+    form.recommends !== null && form.platform &&
     (form.note || "").trim().length >= 10;
+
+  const filledCats = ["graphics", "story", "tutorial", "gameplay", "audio", "performance", "fun"]
+    .map((k) => form[k]).filter((v) => v > 0);
+  const previewScore = filledCats.length > 0 && form.rating > 0
+    ? ((form.rating + filledCats.reduce((a, b) => a + b, 0) / filledCats.length) / 2).toFixed(1)
+    : form.rating > 0 ? form.rating.toFixed(1) : "—";
 
   const submit = async (e) => {
     e.preventDefault();
@@ -68,7 +78,7 @@ export default function ReviewForm() {
     try {
       const payload = { ...form };
       payload.hours_played = form.hours_played === "" ? null : Number(form.hours_played);
-      ["graphics", "story", "tutorial", "gameplay"].forEach((k) => { if (!payload[k]) payload[k] = null; });
+      ["graphics", "story", "tutorial", "gameplay", "audio", "performance", "fun"].forEach((k) => { if (!payload[k]) payload[k] = null; });
       if (!payload.platform) payload.platform = null;
       if (existingReviewId) {
         await api.patch(`/reviews/${existingReviewId}`, payload);
@@ -116,8 +126,16 @@ export default function ReviewForm() {
           <Label className="font-mono uppercase text-xs tracking-widest text-primary mb-2 block">Categorias (1–10)</Label>
           <CategoryRow label="Gráficos" testId="cat-graphics" value={form.graphics} set={(v) => setForm({ ...form, graphics: v })} />
           <CategoryRow label="História" testId="cat-story" value={form.story} set={(v) => setForm({ ...form, story: v })} />
-          <CategoryRow label="Tutorial" testId="cat-tutorial" value={form.tutorial} set={(v) => setForm({ ...form, tutorial: v })} />
           <CategoryRow label="Jogabilidade" testId="cat-gameplay" value={form.gameplay} set={(v) => setForm({ ...form, gameplay: v })} />
+          <CategoryRow label="Tutorial" testId="cat-tutorial" value={form.tutorial} set={(v) => setForm({ ...form, tutorial: v })} />
+          <CategoryRow label="Áudio" testId="cat-audio" value={form.audio} set={(v) => setForm({ ...form, audio: v })} />
+          <CategoryRow label="Performance" testId="cat-performance" value={form.performance} set={(v) => setForm({ ...form, performance: v })} />
+          <CategoryRow label="Diversão" testId="cat-fun" value={form.fun} set={(v) => setForm({ ...form, fun: v })} />
+          <div className="mt-4 pt-3 border-t border-border flex items-center justify-between">
+            <span className="font-mono uppercase text-xs tracking-widest text-muted-foreground">Nota final estimada</span>
+            <span data-testid="review-preview-score" className="font-mono font-bold text-2xl text-primary">{previewScore}<span className="text-sm text-muted-foreground">/10</span></span>
+          </div>
+          <div className="font-mono text-[10px] text-muted-foreground mt-1">Média entre nota geral e média das categorias preenchidas.</div>
         </section>
 
         <section className="gs-card p-6 space-y-3">

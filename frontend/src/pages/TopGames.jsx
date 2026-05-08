@@ -26,8 +26,7 @@ export default function TopGames() {
         <div className="gs-overline flex items-center gap-1.5"><Trophy size={12}/> Hall da Fama</div>
         <h1 className="font-heading font-black text-3xl sm:text-5xl uppercase tracking-tighter mt-1">Top Jogos</h1>
         <p className="text-sm text-muted-foreground mt-2 max-w-xl">
-          Ranking ponderado: combina nota média e número de avaliações (Bayesian average) para evitar resultados injustos.
-          Um jogo com 9.9 e 1000 reviews vence um com 10.0 e 1 review.
+          Ranking ponderado <b>apenas com avaliações reais da comunidade</b>. Combina nota média e nº de avaliações (Bayesian) — um jogo com 9.5/10 e 50 avaliações vence outro com 10/10 e 1 avaliação. Jogos sem avaliações começam num valor neutro (7).
         </p>
       </header>
 
@@ -87,7 +86,10 @@ export default function TopGames() {
                       <span className="font-mono font-bold">{(g.bayesian_score || 0).toFixed(1)}</span>
                     </div>
                     <div className="font-mono text-[10px] text-muted-foreground tracking-wider">
-                      {g.rating}/100 · {g.rating_count} reviews
+                      {g.site_review_count > 0
+                        ? <>{g.site_avg_score}/10 · {g.site_review_count} {g.site_review_count === 1 ? "avaliação" : "avaliações"}</>
+                        : <>Sem avaliações</>
+                      }
                     </div>
                   </div>
                 </Link>

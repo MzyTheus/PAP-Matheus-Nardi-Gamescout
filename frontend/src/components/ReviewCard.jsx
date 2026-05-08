@@ -40,9 +40,14 @@ export default function ReviewCard({ review, showGame = false, onChanged }) {
           </div>
         </Link>
         <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1 px-2 py-1 border border-primary/40 bg-primary/10 rounded-sm">
-            <Star size={14} className="fill-primary text-primary" />
-            <span className="font-mono font-bold">{review.rating}/10</span>
+          <div className="flex flex-col items-center px-2 py-1 border border-primary/40 bg-primary/10 rounded-sm">
+            <div className="flex items-center gap-1">
+              <Star size={14} className="fill-primary text-primary" />
+              <span className="font-mono font-bold">{(review.score ?? review.rating).toFixed ? (review.score ?? review.rating).toFixed(1) : (review.score ?? review.rating)}/10</span>
+            </div>
+            {review.score != null && review.score !== review.rating && (
+              <span className="font-mono text-[9px] text-muted-foreground tracking-wider mt-0.5">geral {review.rating}</span>
+            )}
           </div>
           {isOwner && (
             <DropdownMenu>
@@ -91,11 +96,14 @@ export default function ReviewCard({ review, showGame = false, onChanged }) {
           <span className="inline-flex items-center gap-1 font-mono text-xs text-red-400"><ThumbsDown size={12} /> Não recomenda</span>
         )}
         {review.is_complete && (
-          <div className="ml-auto hidden sm:flex gap-3 font-mono text-[10px] text-muted-foreground">
+          <div className="ml-auto hidden md:flex flex-wrap gap-x-2.5 gap-y-1 font-mono text-[10px] text-muted-foreground justify-end">
             <span>GRA <b className="text-foreground">{review.graphics}</b></span>
             <span>HIS <b className="text-foreground">{review.story}</b></span>
             <span>JOG <b className="text-foreground">{review.gameplay}</b></span>
             <span>TUT <b className="text-foreground">{review.tutorial}</b></span>
+            {review.audio != null && <span>AUD <b className="text-foreground">{review.audio}</b></span>}
+            {review.performance != null && <span>PER <b className="text-foreground">{review.performance}</b></span>}
+            {review.fun != null && <span>DIV <b className="text-foreground">{review.fun}</b></span>}
           </div>
         )}
       </div>
