@@ -73,6 +73,28 @@ Plataforma social de jogos com:
 
 ## Backlog
 ### P1
+- Real-time chat via WebSocket (atualmente polling 4s — funcional mas com latência)
+- Upload de foto via object storage (atualmente URL/base64)
+- Steam OAuth (requer API key Steam do utilizador)
+- Comunidades — moderação (banir, kick, owner-only edit), ícones de comunidade
+- Notificações in-app (novas DMs, pedidos de amizade, respostas)
+
+### P2
+- Listas de favoritos do utilizador (homepage seção "Jogos favoritos")
+- Sistema de comentários em avaliações + likes
+- Páginas dedicadas a categorias (Terror, Ação, etc.)
+- Refactor: dividir `server.py` (1561 linhas) em routers (`auth`, `users`, `games`, `reviews`, `guides`, `help`, `friends`, `chat`, `communities`, `admin`)
+- Modelos `*PatchIn` para updates parciais reais (atualmente PATCH /reviews exige payload completo)
+- Rate-limit em endpoints de mensagens (anti-spam)
+- Paginação de mensagens (atualmente limitada a 500 por thread)
+- Wishlist contagem na homepage
+
+## Test Credentials
+Admin: `admin@gamescout.pt` / `admin123` (10000 pts → Apreciador de Obras)
+x `*.emergentagent.com` + frontend usa `window.location.origin` (resolve cross-origin entre URLs preview)
+
+## Backlog
+### P1
 - Real-time chat between friends (currently friend system + UI only — chat bubbles WIP)
 - Comunidades (grupos públicos)
 - Upload de foto via object storage (atualmente URL)
