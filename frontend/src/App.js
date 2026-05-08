@@ -22,6 +22,9 @@ import Friends from "@/pages/Friends";
 import Discover from "@/pages/Discover";
 import TopGames from "@/pages/TopGames";
 import Wishlist from "@/pages/Wishlist";
+import Chat from "@/pages/Chat";
+import Communities from "@/pages/Communities";
+import CommunityDetail from "@/pages/CommunityDetail";
 
 function ShellLayout({ children }) {
   return (
@@ -75,6 +78,10 @@ function AppRouter() {
               <Route path="/perfil/:userId" element={<Profile />} />
               <Route path="/ajuda" element={<HelpRequests />} />
               <Route path="/amigos" element={<ProtectedRoute><Friends /></ProtectedRoute>} />
+              <Route path="/chat" element={<ProtectedRoute><Chat /></ProtectedRoute>} />
+              <Route path="/chat/:friendId" element={<ProtectedRoute><Chat /></ProtectedRoute>} />
+              <Route path="/comunidades" element={<Communities />} />
+              <Route path="/comunidades/:communityId" element={<CommunityDetail />} />
               <Route path="*" element={<div className="text-center py-20"><div className="font-heading text-6xl font-black text-primary">404</div><div className="font-mono text-sm text-muted-foreground mt-4">Página não encontrada</div></div>} />
             </Routes>
           </ShellLayout>

@@ -133,6 +133,7 @@ class Review(ReviewIn):
     user_name: str
     user_picture: Optional[str] = None
     is_complete: bool
+    score: float
     created_at: datetime
     updated_at: datetime
 
@@ -338,6 +339,9 @@ async def startup():
     await db.help_requests.create_index("created_at")
     await db.friendships.create_index([("from_user", 1), ("to_user", 1)], unique=True)
     await db.messages.create_index("created_at")
+    await db.messages.create_index([("thread_key", 1), ("created_at", 1)])
+    await db.communities.create_index("community_id", unique=True)
+    await db.communities.create_index("name")
 
     # Seed admin
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@gamescout.pt")
@@ -365,6 +369,26 @@ async def startup():
     # Game catalog: import from IGDB on startup, then schedule periodic refresh
     asyncio.create_task(_refresh_games_catalog())
     asyncio.create_task(_periodic_refresh_loop())
+
+    # One-time backfill: compute `score` for legacy reviews that don't have it.
+    asyncio.create_task(_backfill_review_scores())
+
+
+async def _backfill_review_scores():
+    """Ensure every review has a computed `score` so /games/top aggregations work."""
+    cur = db.reviews.find({"score": {"$exists": False}}, {"_id": 0})
+    count = 0
+    async for r in cur:
+        cat_values = [r.get(c) for c in REVIEW_CATEGORIES if r.get(c) is not None]
+        if cat_values:
+            cat_avg = sum(cat_values) / len(cat_values)
+            score = round((r.get("rating", 0) + cat_avg) / 2, 2)
+        else:
+            score = float(r.get("rating", 0))
+        await db.reviews.update_one({"review_id": r["review_id"]}, {"$set": {"score": score}})
+        count += 1
+    if count:
+        log.info("Backfilled score on %d legacy reviews", count)
 
 
 async def _refresh_games_catalog():
@@ -965,13 +989,18 @@ async def create_review(game_id: str, payload: ReviewIn, user: dict = Depends(ge
         raise HTTPException(404, "Jogo não encontrado")
     existing = await db.reviews.find_one({"game_id": game_id, "user_id": user["user_id"]})
     is_complete = _is_review_complete(payload)
+    score = _review_score(payload)
     now = datetime.now(timezone.utc)
     if existing:
+        was_complete = bool(existing.get("is_complete"))
         await db.reviews.update_one(
             {"review_id": existing["review_id"]},
-            {"$set": {**payload.model_dump(), "is_complete": is_complete, "updated_at": now.isoformat()}},
+            {"$set": {**payload.model_dump(), "is_complete": is_complete, "score": score, "updated_at": now.isoformat()}},
         )
         review_id = existing["review_id"]
+        # Award the diff if user upgraded incomplete → complete
+        if is_complete and not was_complete:
+            await award_points(user["user_id"], 25)
     else:
         review_id = f"rev_{uuid.uuid4().hex[:12]}"
         doc = {
@@ -982,6 +1011,7 @@ async def create_review(game_id: str, payload: ReviewIn, user: dict = Depends(ge
             "user_picture": user.get("picture"),
             **payload.model_dump(),
             "is_complete": is_complete,
+            "score": score,
             "created_at": now.isoformat(),
             "updated_at": now.isoformat(),
         }
@@ -1010,12 +1040,16 @@ async def update_review(review_id: str, payload: ReviewIn, user: dict = Depends(
         raise HTTPException(404, "Avaliação não encontrada")
     if r["user_id"] != user["user_id"] and user.get("role") != "admin":
         raise HTTPException(403, "Sem permissão")
+    was_complete = bool(r.get("is_complete"))
     is_complete = _is_review_complete(payload)
     score = _review_score(payload)
     await db.reviews.update_one(
         {"review_id": review_id},
         {"$set": {**payload.model_dump(), "is_complete": is_complete, "score": score, "updated_at": datetime.now(timezone.utc).isoformat()}},
     )
+    # Award diff if upgraded from partial → complete
+    if is_complete and not was_complete and r["user_id"] == user["user_id"]:
+        await award_points(user["user_id"], 25)
     return await db.reviews.find_one({"review_id": review_id}, {"_id": 0})
 
 
@@ -1282,6 +1316,226 @@ async def remove_friendship(user_id: str, user: dict = Depends(get_current_user)
     if res.deleted_count == 0:
         raise HTTPException(404, "Amizade não encontrada")
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Chat — Direct Messages (between friends) + Communities (public groups)
+# ---------------------------------------------------------------------------
+class MessageIn(BaseModel):
+    content: str = Field(min_length=1, max_length=2000)
+
+
+class CommunityIn(BaseModel):
+    name: str = Field(min_length=3, max_length=40)
+    description: Optional[str] = Field(default="", max_length=240)
+    icon: Optional[str] = None
+
+
+def _dm_key(a: str, b: str) -> str:
+    return "dm::" + "::".join(sorted([a, b]))
+
+
+async def _are_friends(a: str, b: str) -> bool:
+    f = await db.friendships.find_one({
+        "$or": [
+            {"from_user": a, "to_user": b, "status": "accepted"},
+            {"from_user": b, "to_user": a, "status": "accepted"},
+        ]
+    })
+    return bool(f)
+
+
+@api.get("/chat/threads")
+async def list_chat_threads(user: dict = Depends(get_current_user)):
+    """Return DM threads (one per friend with whom we've exchanged at least 1 message,
+    plus all accepted friends so the user can start chatting)."""
+    me = user["user_id"]
+    # All accepted friends
+    friends_cur = db.friendships.find(
+        {"$or": [{"from_user": me, "status": "accepted"}, {"to_user": me, "status": "accepted"}]},
+        {"_id": 0},
+    )
+    friend_ids = []
+    async for f in friends_cur:
+        friend_ids.append(f["to_user"] if f["from_user"] == me else f["from_user"])
+    if not friend_ids:
+        return []
+    # Latest message per thread
+    keys = [_dm_key(me, fid) for fid in friend_ids]
+    latest = {}
+    pipe = [
+        {"$match": {"thread_key": {"$in": keys}}},
+        {"$sort": {"created_at": -1}},
+        {"$group": {"_id": "$thread_key", "last": {"$first": "$$ROOT"}}},
+    ]
+    async for d in db.messages.aggregate(pipe):
+        latest[d["_id"]] = d["last"]
+    # Build response
+    users = {u["user_id"]: u async for u in db.users.find({"user_id": {"$in": friend_ids}}, {"_id": 0, "user_id": 1, "name": 1, "picture": 1})}
+    threads = []
+    for fid in friend_ids:
+        u = users.get(fid)
+        if not u:
+            continue
+        last = latest.get(_dm_key(me, fid))
+        threads.append({
+            "user_id": fid,
+            "name": u.get("name"),
+            "picture": u.get("picture"),
+            "last_message": last.get("content") if last else None,
+            "last_at": last.get("created_at") if last else None,
+            "last_sender": last.get("sender_id") if last else None,
+        })
+    threads.sort(key=lambda t: (t["last_at"] or "", t["name"] or ""), reverse=True)
+    return threads
+
+
+@api.get("/chat/dm/{user_id}")
+async def get_dm_messages(user_id: str, after: Optional[str] = None, user: dict = Depends(get_current_user)):
+    me = user["user_id"]
+    if me == user_id:
+        raise HTTPException(400, "Não podes conversar contigo próprio")
+    if not await _are_friends(me, user_id):
+        raise HTTPException(403, "Só podes conversar com amigos")
+    flt = {"thread_key": _dm_key(me, user_id)}
+    if after:
+        flt["created_at"] = {"$gt": after}
+    cur = db.messages.find(flt, {"_id": 0}).sort("created_at", 1).limit(500)
+    return [m async for m in cur]
+
+
+@api.post("/chat/dm/{user_id}")
+async def send_dm(user_id: str, payload: MessageIn, user: dict = Depends(get_current_user)):
+    me = user["user_id"]
+    if me == user_id:
+        raise HTTPException(400, "Não podes conversar contigo próprio")
+    if not await _are_friends(me, user_id):
+        raise HTTPException(403, "Só podes enviar mensagens a amigos")
+    msg = {
+        "msg_id": f"msg_{uuid.uuid4().hex[:12]}",
+        "thread_key": _dm_key(me, user_id),
+        "type": "dm",
+        "sender_id": me,
+        "sender_name": user.get("name"),
+        "sender_picture": user.get("picture"),
+        "content": payload.content.strip(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.messages.insert_one(msg)
+    msg.pop("_id", None)
+    return msg
+
+
+@api.get("/communities")
+async def list_communities(q: Optional[str] = None, user: dict = Depends(get_current_user_optional)):
+    flt = {}
+    if q:
+        flt["name"] = {"$regex": q, "$options": "i"}
+    cur = db.communities.find(flt, {"_id": 0}).sort("members_count", -1).limit(200)
+    out = []
+    me_id = user["user_id"] if user else None
+    async for c in cur:
+        c["is_member"] = bool(me_id and me_id in (c.get("members") or []))
+        c["members_count"] = len(c.get("members") or [])
+        c.pop("members", None)
+        out.append(c)
+    return out
+
+
+@api.post("/communities")
+async def create_community(payload: CommunityIn, user: dict = Depends(get_current_user)):
+    cid = f"com_{uuid.uuid4().hex[:10]}"
+    doc = {
+        "community_id": cid,
+        "name": payload.name.strip(),
+        "description": (payload.description or "").strip(),
+        "icon": payload.icon,
+        "owner_id": user["user_id"],
+        "members": [user["user_id"]],
+        "members_count": 1,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.communities.insert_one(doc)
+    doc.pop("_id", None)
+    doc["is_member"] = True
+    doc.pop("members", None)
+    return doc
+
+
+@api.post("/communities/{community_id}/join")
+async def join_community(community_id: str, user: dict = Depends(get_current_user)):
+    res = await db.communities.update_one(
+        {"community_id": community_id},
+        {"$addToSet": {"members": user["user_id"]}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(404, "Comunidade não encontrada")
+    # Recount
+    c = await db.communities.find_one({"community_id": community_id}, {"_id": 0, "members": 1})
+    await db.communities.update_one({"community_id": community_id}, {"$set": {"members_count": len(c.get("members") or [])}})
+    return {"ok": True}
+
+
+@api.delete("/communities/{community_id}/leave")
+async def leave_community(community_id: str, user: dict = Depends(get_current_user)):
+    res = await db.communities.update_one(
+        {"community_id": community_id},
+        {"$pull": {"members": user["user_id"]}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(404, "Comunidade não encontrada")
+    c = await db.communities.find_one({"community_id": community_id}, {"_id": 0, "members": 1})
+    await db.communities.update_one({"community_id": community_id}, {"$set": {"members_count": len(c.get("members") or [])}})
+    return {"ok": True}
+
+
+@api.get("/communities/{community_id}")
+async def get_community(community_id: str, user: dict = Depends(get_current_user_optional)):
+    c = await db.communities.find_one({"community_id": community_id}, {"_id": 0})
+    if not c:
+        raise HTTPException(404, "Comunidade não encontrada")
+    me_id = user["user_id"] if user else None
+    c["is_member"] = bool(me_id and me_id in (c.get("members") or []))
+    c["members_count"] = len(c.get("members") or [])
+    c.pop("members", None)
+    return c
+
+
+@api.get("/communities/{community_id}/messages")
+async def get_community_messages(community_id: str, after: Optional[str] = None, user: dict = Depends(get_current_user)):
+    c = await db.communities.find_one({"community_id": community_id}, {"_id": 0, "members": 1})
+    if not c:
+        raise HTTPException(404, "Comunidade não encontrada")
+    if user["user_id"] not in (c.get("members") or []):
+        raise HTTPException(403, "Junta-te à comunidade para ver mensagens")
+    flt = {"thread_key": f"com::{community_id}"}
+    if after:
+        flt["created_at"] = {"$gt": after}
+    cur = db.messages.find(flt, {"_id": 0}).sort("created_at", 1).limit(500)
+    return [m async for m in cur]
+
+
+@api.post("/communities/{community_id}/messages")
+async def post_community_message(community_id: str, payload: MessageIn, user: dict = Depends(get_current_user)):
+    c = await db.communities.find_one({"community_id": community_id}, {"_id": 0, "members": 1})
+    if not c:
+        raise HTTPException(404, "Comunidade não encontrada")
+    if user["user_id"] not in (c.get("members") or []):
+        raise HTTPException(403, "Junta-te à comunidade para enviar mensagens")
+    msg = {
+        "msg_id": f"msg_{uuid.uuid4().hex[:12]}",
+        "thread_key": f"com::{community_id}",
+        "type": "community",
+        "community_id": community_id,
+        "sender_id": user["user_id"],
+        "sender_name": user.get("name"),
+        "sender_picture": user.get("picture"),
+        "content": payload.content.strip(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.messages.insert_one(msg)
+    msg.pop("_id", None)
+    return msg
 
 
 # ---------------------------------------------------------------------------

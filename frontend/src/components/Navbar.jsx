@@ -50,6 +50,8 @@ export default function Navbar() {
           <NavLink data-testid="nav-descobrir" to="/descobrir" className={({ isActive }) => `px-3 py-2 text-sm font-mono uppercase tracking-wider transition-colors ${isActive ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}>Descobrir</NavLink>
           <NavLink data-testid="nav-ajuda" to="/ajuda" className={({ isActive }) => `px-3 py-2 text-sm font-mono uppercase tracking-wider transition-colors ${isActive ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}>Ajuda</NavLink>
           <NavLink data-testid="nav-amigos" to="/amigos" className={({ isActive }) => `px-3 py-2 text-sm font-mono uppercase tracking-wider transition-colors ${isActive ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}>Amigos</NavLink>
+          <NavLink data-testid="nav-chat" to="/chat" className={({ isActive }) => `px-3 py-2 text-sm font-mono uppercase tracking-wider transition-colors ${isActive ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}>Chat</NavLink>
+          <NavLink data-testid="nav-comunidades" to="/comunidades" className={({ isActive }) => `px-3 py-2 text-sm font-mono uppercase tracking-wider transition-colors ${isActive ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}>Comunidades</NavLink>
         </nav>
 
         <Button data-testid="theme-toggle" variant="ghost" size="icon" onClick={toggle} className="rounded-sm">

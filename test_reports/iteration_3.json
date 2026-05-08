@@ -1,0 +1,43 @@
+{
+  "summary": "GameScout Iteration 5 backend testing — 26/26 pytest tests PASSED (100%) against the public preview URL. Covered every requested feature: review score=(rating+cat_avg)/2 stored on POST/PATCH (verified spec example score=8.86 for rating=9 cats=[10,8,7,9,8,9,10]), +25 pts on incomplete→complete via PATCH and via re-POST, GET /games/{id} avg_rating now uses score (not rating), GET /games/top exposes site_review_count/site_avg_score/bayesian_score with formula (n*R+5*7)/(n+5) verified game-by-game (50 games sampled), 0-review games appear at bayesian=7.0 and site_avg_score=null as spec'd, on-startup backfill verified (no review missing `score`), Chat DM (self→400, non-friend→403, friends send/receive/`after` filter/threads sorted with last_message+last_at, max 2000 chars→422), Communities (create→owner auto-member, list with is_member+members_count and no _id leak, get detail, join/leave updates members_count, member-only messages with 403 for non-members, max 2000 chars→422, type=community + thread_key=com::{id}). All iteration-4 endpoints regression-checked (login/register/games/featured/wishlist/friends/help-requests). The 4 pre-existing iteration_4 tests that now fail are EXPECTED breaking-changes from iteration 5 spec — not bugs (see notes below).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration5.py",
+    "/app/test_reports/pytest/iteration5_results.xml"
+  ],
+  "action_items": [
+    "Iteration-4 test file (/app/backend/tests/test_iteration4.py) has 4 stale assertions that conflict with iteration-5 spec — main agent may want to either retire test_iteration4.py or update: (a) TestTopGames expected rating_count>=5 floor — but spec now includes 0-review games at bayesian=7.0; (b) test_patch_review_by_owner_recomputes_complete uses an outdated PATCH payload missing the 3 newly-required categories (audio/performance/fun) — current REVIEW_CATEGORIES has 7 entries so without them is_complete remains False (correct behaviour, stale test).",
+    "Optional: cap members_count update to a single $set after $addToSet/$pull instead of two round trips (current code does find→update which is racy under concurrency)."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now 1561 lines (was 1245 in iteration 4) — long past the 700-line threshold. Splitting into routers/ (auth, users, games, reviews, guides, help, friends, chat, communities, admin) is overdue.",
+    "_review_score uses payload.rating directly even when payload has no categories; OK for create, but on PATCH if a partial payload reuses ReviewIn (all fields required besides categories), categories may all be None and score collapses to float(rating). Acceptable, but worth a docstring note.",
+    "`/chat/threads` sort uses (t['last_at'] or '', t['name']) — when `last_at` is None for friends with no messages, those threads bubble to the bottom after sorting reverse=True, which is correct, but threads with a last_at of identical strings then secondary-sort by name reverse — not alphabetical. Probably fine but counter-intuitive.",
+    "Communities `members_count` is maintained via two queries (find then $set) — race-prone. Use $size aggregation in a single update or compute on read.",
+    "Community/DM messages have NO pagination beyond limit(500). For long-running threads this will silently truncate history. Consider before/after cursor pagination.",
+    "Self-DM check in get_dm_messages and send_dm raises 400 — but list_chat_threads excludes self because friendships table never stores (me, me). OK, but worth a unit-test boundary for completeness (covered in iteration-5 suite).",
+    "No rate-limit on POST /chat/dm or /communities/messages — abuse vector. Consider per-user 1/sec.",
+    "_backfill_review_scores spawns a fire-and-forget asyncio task at startup with no error capture beyond log. If it raises mid-iteration MongoDB cursor recovery is lost. Wrap in try/except and emit a metric/log."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration5.py (new — 26 pytest tests)"
+  ],
+  "success_rate": {
+    "backend": "100% (26/26 iteration-5 specific tests). Iteration-4 file has 4 expected-fail tests due to intentional spec changes (top-games contract change + REVIEW_CATEGORIES expansion to 7).",
+    "frontend": "not tested (backend-only request)"
+  },
+  "test_credentials": "Admin admin@gamescout.pt / admin123 (verified). Three ephemeral TEST_i5_<role>_<run>@gamescout.pt / tester123 users created per run (A/B/C).",
+  "seed_data_creation": "Per-run: 3 registered TEST_ users, ~6 reviews across Terraria/Minecraft/Dead-by-Daylight/No-Man-Sky/FNAF (created/updated/deleted), 1 friendship A↔B, 1 community 'TEST i5 com <run>'. All identifiers TEST_-prefixed. Reviews created during the run are deleted again where possible; the spec-validation review on Terraria (TestReviewScore) intentionally remains so /games/{id}.avg_rating reflects score-based aggregation.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "(1) Catalog still uses IGDB IDs as game_id (e.g. 'igdb-119133'); always resolve via GET /api/games?q=<title>&limit=1 — never hardcode legacy slugs. (2) REVIEW_CATEGORIES is now 7-wide: graphics/story/tutorial/gameplay/audio/performance/fun — any complete-review payload must include all 7 plus rating, hours_played, recommends, platform, and note ≥10 chars. (3) DM thread_key = 'dm::' + '::'.join(sorted([uid_a, uid_b])); community thread_key = 'com::{id}'. (4) /games/top contract: includes 0-review games at bayesian=7.0 with site_review_count=0 and site_avg_score=null — DO NOT assert rating_count>=5 like iteration 4 did. (5) /games/{id}.avg_rating now reflects mean of `score` not `rating`. (6) iteration_4 file at /app/backend/tests/test_iteration4.py has 4 stale failing tests that are not iteration-5 bugs — recommend retiring or porting forward. (7) test_iteration5.py is the canonical regression suite for current spec.",
+  "rca of the issue": "No bugs. The 4 iteration_4 failures observed during regression run are expected breakage from documented spec changes: TestTopGames asserts rating_count>=5 — iteration 5 deliberately removed this floor; TestReviewsCrud sends a PATCH payload missing the 3 new categories so is_complete cannot be True. Both behaviours match the iteration-5 spec exactly."
+}

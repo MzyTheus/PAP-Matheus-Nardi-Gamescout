@@ -5,7 +5,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
-import { Search, UserPlus, Check, Users, UserMinus } from "lucide-react";
+import { Search, UserPlus, Check, Users, UserMinus, MessageSquare } from "lucide-react";
 
 export default function Friends() {
   const [friends, setFriends] = useState([]);
@@ -117,6 +117,16 @@ export default function Friends() {
                     <div className="font-mono text-[10px] uppercase text-muted-foreground tracking-wider">{u.points || 0} pts</div>
                   </div>
                 </Link>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  asChild
+                  data-testid={`chat-friend-${u.user_id}`}
+                  className="rounded-sm"
+                  title="Enviar mensagem"
+                >
+                  <Link to={`/chat/${u.user_id}`}><MessageSquare size={14} /></Link>
+                </Button>
                 <Button
                   size="sm"
                   variant="outline"
