@@ -24,6 +24,25 @@ Plataforma social de jogos com:
 - Frontend: React Router, AuthContext, Tailwind theme (orange/black-white), Unbounded/Manrope/JetBrains Mono fonts, Shadcn UI
 - All MongoDB queries exclude `_id`. Users use UUID `user_id` field.
 
+## Implemented (2026-05-29 — iteração 6)
+- ✅ **Auth Gmail-only**: registo e login devolvem 400 para emails que não terminem em `@gmail.com`
+- ✅ **Verificação de email obrigatória via Resend**:
+  - `RESEND_API_KEY` configurada; email HTML com código de 6 dígitos
+  - `email_verifications` collection com TTL de 30min
+  - `POST /api/auth/verify-email` (com código), `POST /api/auth/resend-code`
+  - Gating de 24 endpoints WRITE (review/guide/comunidade/help/wishlist/friend/DM): 403 enquanto `email_verified=false`
+  - Helper `get_verified_user` (Google users já são pre-verified)
+- ✅ **Admin `matheusvittore670@gmail.com` / `admin123`**:
+  - Seedado ao arranque com `email_verified=true`
+  - admin@gamescout.pt demovido a `user` automaticamente
+- ✅ **Moderação admin** (`/api/admin/*`): stats, lista/pesquisa users, warn, suspend/unsuspend, PATCH /admin/games/{id}, feature/unfeature reviews+guias, delete qualquer mensagem
+- ✅ **Página `/admin`** com tabela de utilizadores, dialogs warn/suspend, contadores globais
+- ✅ **Apagar mensagem própria**: `DELETE /api/chat/messages/{id}` e `DELETE /api/communities/{cid}/messages/{id}` (sender, owner-da-comunidade ou admin); ícone "lixo" no hover sobre própria mensagem
+- ✅ **Limpeza automática ao startup** (`_cleanup_test_data`): remove utilizadores TEST_/test_/tester/smoke_/qa_ + reviews/guias/comunidades associadas
+- ✅ **Catálogo focado**: 500 main games (filtro `_is_main_game` exclui DLC/expansão/remaster/port/bundle/mod/episode/season). Whitelist atualizada (GTA V, Fortnite, Valorant, Helldivers 2, Baldur's Gate 3, Palworld, Marvel Rivals, etc.)
+- ✅ Testes: 30/30 backend pytest (após fix `create_review` → `get_verified_user`)
+
+
 ## Implemented (2026-05-06 — iteração 5)
 - ✅ **Bug fix**: import duplicado de `useState` em GameDetail.jsx (compile error)
 - ✅ **Wishlist**:

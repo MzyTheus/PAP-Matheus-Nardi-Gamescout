@@ -1210,7 +1210,7 @@ async def list_reviews(game_id: str):
 
 
 @api.post("/games/{game_id}/reviews")
-async def create_review(game_id: str, payload: ReviewIn, user: dict = Depends(get_current_user)):
+async def create_review(game_id: str, payload: ReviewIn, user: dict = Depends(get_verified_user)):
     g = await db.games.find_one({"game_id": game_id})
     if not g:
         raise HTTPException(404, "Jogo não encontrado")
