@@ -6,7 +6,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { cacheBust } from "@/lib/format";
-import { MessageSquare, Send, ArrowLeft } from "lucide-react";
+import { MessageSquare, Send, ArrowLeft, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Chat() {
@@ -74,6 +74,16 @@ export default function Chat() {
       toast.error(err.response?.data?.detail || "Erro ao enviar");
     } finally {
       setSending(false);
+    }
+  };
+
+  const deleteMessage = async (msgId) => {
+    try {
+      await api.delete(`/chat/messages/${msgId}`);
+      setMessages((prev) => prev.filter((m) => m.msg_id !== msgId));
+      toast.success("Mensagem apagada");
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Erro");
     }
   };
 
@@ -148,14 +158,35 @@ export default function Chat() {
                   <div className="text-center text-xs font-mono uppercase tracking-wider text-muted-foreground py-12">Sem mensagens. Envia a primeira!</div>
                 ) : messages.map((m) => {
                   const mine = m.sender_id === user?.user_id;
+                  const canDelete = mine || user?.role === "admin";
                   return (
-                    <div key={m.msg_id} data-testid={`chat-msg-${m.msg_id}`} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
+                    <div key={m.msg_id} data-testid={`chat-msg-${m.msg_id}`} className={`flex group/msg ${mine ? "justify-end" : "justify-start"}`}>
+                      {canDelete && mine && (
+                        <button
+                          data-testid={`chat-msg-delete-${m.msg_id}`}
+                          onClick={() => deleteMessage(m.msg_id)}
+                          title="Apagar mensagem"
+                          className="self-center mr-1 opacity-0 group-hover/msg:opacity-100 transition text-muted-foreground hover:text-destructive p-1 rounded-sm"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      )}
                       <div className={`max-w-[78%] px-3 py-2 text-sm rounded-sm ${mine ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"}`}>
                         <div className="whitespace-pre-line break-words">{m.content}</div>
                         <div className={`mt-1 font-mono text-[9px] tracking-wider ${mine ? "text-primary-foreground/70" : "text-muted-foreground"}`}>
                           {new Date(m.created_at).toLocaleTimeString("pt-PT", { hour: "2-digit", minute: "2-digit" })}
                         </div>
                       </div>
+                      {canDelete && !mine && (
+                        <button
+                          data-testid={`chat-msg-delete-${m.msg_id}`}
+                          onClick={() => deleteMessage(m.msg_id)}
+                          title="Apagar mensagem (admin)"
+                          className="self-center ml-1 opacity-0 group-hover/msg:opacity-100 transition text-muted-foreground hover:text-destructive p-1 rounded-sm"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      )}
                     </div>
                   );
                 })}

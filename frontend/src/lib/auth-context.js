@@ -37,18 +37,24 @@ export function AuthProvider({ children }) {
   }, [refresh]);
 
   const login = async (email, password) => {
+    if (!/@gmail\.com$/i.test(email.trim())) {
+      throw new Error("Apenas contas Gmail são permitidas (@gmail.com)");
+    }
     try {
       await api.post("/auth/login", { email, password });
-      await refresh();
+      return await refresh();
     } catch (e) {
       throw new Error(formatApiError(e.response?.data?.detail, "Falha no login"));
     }
   };
 
   const register = async (name, email, password) => {
+    if (!/@gmail\.com$/i.test(email.trim())) {
+      throw new Error("Apenas contas Gmail são permitidas (@gmail.com)");
+    }
     try {
       await api.post("/auth/register", { name, email, password });
-      await refresh();
+      return await refresh();
     } catch (e) {
       throw new Error(formatApiError(e.response?.data?.detail, "Falha no registo"));
     }

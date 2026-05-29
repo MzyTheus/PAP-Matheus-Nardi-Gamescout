@@ -14,15 +14,15 @@ export default function Login() {
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  useEffect(() => { if (user) nav("/", { replace: true }); }, [user, nav]);
+  useEffect(() => { if (user) nav(user.needs_verification ? "/verificar-email" : "/", { replace: true }); }, [user, nav]);
 
   const onSubmit = async (e) => {
     e.preventDefault();
     setSubmitting(true);
     try {
-      await login(email, password);
+      const u = await login(email, password);
       toast.success("Bem-vindo ao GameScout");
-      nav("/");
+      nav(u?.needs_verification ? "/verificar-email" : "/");
     } catch (err) {
       toast.error(err.message);
     } finally {
@@ -85,8 +85,9 @@ export default function Login() {
 
           <form onSubmit={onSubmit} className="space-y-4" data-testid="login-form">
             <div className="space-y-1.5">
-              <Label htmlFor="email" className="font-mono uppercase text-[11px] tracking-wider">Email</Label>
-              <Input id="email" data-testid="login-email" type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} className="h-11 rounded-sm" />
+              <Label htmlFor="email" className="font-mono uppercase text-[11px] tracking-wider">Email Gmail</Label>
+              <Input id="email" data-testid="login-email" type="email" placeholder="exemplo@gmail.com" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} className="h-11 rounded-sm" />
+              <div className="font-mono text-[10px] text-muted-foreground tracking-wider">Apenas contas @gmail.com são aceites</div>
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="password" className="font-mono uppercase text-[11px] tracking-wider">Password</Label>

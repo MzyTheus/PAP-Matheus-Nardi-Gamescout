@@ -27,6 +27,13 @@ from pydantic import BaseModel, EmailStr, Field, ConfigDict
 from seed import GAMES_SEED
 import igdb as igdb_mod
 
+# Resend (transactional email) — optional; fails-soft if key missing
+try:
+    import resend as _resend
+    _resend.api_key = os.environ.get("RESEND_API_KEY", "")
+except Exception:  # pragma: no cover
+    _resend = None
+
 # ---------------------------------------------------------------------------
 # DB
 # ---------------------------------------------------------------------------
@@ -169,6 +176,71 @@ def verify_password(p: str, h: str) -> bool:
         return False
 
 
+# Only Gmail accounts can register/login (per product spec).
+def is_gmail(email: str) -> bool:
+    return (email or "").lower().strip().endswith("@gmail.com")
+
+
+def gen_verification_code() -> str:
+    """6-digit numeric code for email verification."""
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+async def send_verification_email(to_email: str, name: str, code: str) -> bool:
+    """Fire-and-forget email send via Resend. Logs and returns False on failure."""
+    if not _resend or not os.environ.get("RESEND_API_KEY"):
+        log.warning("Resend not configured — skipping email to %s (code=%s)", to_email, code)
+        return False
+    sender = os.environ.get("RESEND_FROM_EMAIL", "onboarding@resend.dev")
+    html = f"""
+    <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;padding:24px;background:#0a0a0a;color:#fff;border-radius:6px">
+      <div style="font-size:24px;font-weight:900;letter-spacing:-0.5px;text-transform:uppercase">
+        Game<span style="color:#ff6a00">Scout</span>
+      </div>
+      <h2 style="font-weight:700;margin-top:18px">Olá, {name}!</h2>
+      <p style="color:#bbb;line-height:1.5">Confirma o teu email para ativares a tua conta no GameScout.</p>
+      <div style="background:#171717;border:1px solid #ff6a00;border-radius:4px;padding:18px;margin:18px 0;text-align:center">
+        <div style="color:#ff6a00;font-size:11px;letter-spacing:3px;text-transform:uppercase;margin-bottom:6px">O teu código</div>
+        <div style="font-family:'Courier New',monospace;font-size:36px;font-weight:900;letter-spacing:8px">{code}</div>
+      </div>
+      <p style="color:#888;font-size:12px">Este código expira em 30 minutos. Se não foste tu, ignora este email.</p>
+      <p style="color:#666;font-size:11px;margin-top:30px">— Equipa GameScout</p>
+    </div>
+    """
+    try:
+        await asyncio.to_thread(
+            _resend.Emails.send,
+            {
+                "from": f"GameScout <{sender}>",
+                "to": [to_email],
+                "subject": "GameScout · Confirma o teu email",
+                "html": html,
+            },
+        )
+        return True
+    except Exception as e:
+        log.error("Failed to send verification email to %s: %s", to_email, e)
+        return False
+
+
+async def issue_verification_code(user_id: str, email: str, name: str) -> None:
+    """Generate and store a 6-digit code, then send by email (best-effort)."""
+    code = gen_verification_code()
+    await db.email_verifications.update_one(
+        {"user_id": user_id},
+        {"$set": {
+            "user_id": user_id,
+            "email": email,
+            "code": code,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat(),
+            "attempts": 0,
+        }},
+        upsert=True,
+    )
+    await send_verification_email(email, name, code)
+
+
 def make_jwt(user_id: str, kind: str, ttl: timedelta) -> str:
     return jwt.encode(
         {"sub": user_id, "type": kind, "exp": datetime.now(timezone.utc) + ttl},
@@ -254,6 +326,24 @@ async def get_current_user(request: Request) -> dict:
     u = await get_current_user_optional(request)
     if not u:
         raise HTTPException(401, "Não autenticado")
+    # Reject suspended users (admins exempt — admin can still operate even if flagged)
+    su = u.get("suspended_until")
+    if su and u.get("role") != "admin":
+        if isinstance(su, str):
+            try: su = datetime.fromisoformat(su)
+            except Exception: su = None
+        if su and su.tzinfo is None: su = su.replace(tzinfo=timezone.utc)
+        if su and su > datetime.now(timezone.utc):
+            raise HTTPException(403, f"Conta suspensa até {su.isoformat()}: {u.get('suspended_reason') or 'violação das regras'}")
+    return u
+
+
+async def get_verified_user(request: Request) -> dict:
+    """Same as get_current_user but blocks unverified email users.
+    Google-auth users are pre-verified so they pass through."""
+    u = await get_current_user(request)
+    if u.get("auth_provider") == "email" and not u.get("email_verified", False):
+        raise HTTPException(403, "Confirma o teu email para realizar esta ação")
     return u
 
 
@@ -342,8 +432,11 @@ async def startup():
     await db.messages.create_index([("thread_key", 1), ("created_at", 1)])
     await db.communities.create_index("community_id", unique=True)
     await db.communities.create_index("name")
+    await db.email_verifications.create_index("user_id", unique=True)
+    await db.email_verifications.create_index("expires_at", expireAfterSeconds=0)
 
-    # Seed admin
+    # Seed admin (legacy local admin — kept for emergency access via Gmail-only filter,
+    # this account will be unable to log in normally so we leave it as DB seed only).
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@gamescout.pt")
     admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
     existing = await db.users.find_one({"email": admin_email})
@@ -358,6 +451,7 @@ async def startup():
             "bio": "Curador da comunidade GameScout",
             "picture": None,
             "auth_provider": "email",
+            "email_verified": True,
             "social": {},
             "prefs": {"platforms": ["pc"], "favorite_game": None, "pc_specs": None},
             "created_at": datetime.now(timezone.utc),
@@ -366,12 +460,80 @@ async def startup():
     elif not verify_password(admin_password, existing.get("password_hash", "")):
         await db.users.update_one({"email": admin_email}, {"$set": {"password_hash": hash_password(admin_password)}})
 
+    # Promote configured Gmail to admin role (idempotent). Also seed it on first
+    # boot so it has a known password — required since email/password is the
+    # only login flow available for non-Google users.
+    target_admin = (os.environ.get("ADMIN_GMAIL") or "").lower().strip()
+    target_pwd = os.environ.get("ADMIN_GMAIL_PASSWORD", "")
+    if target_admin:
+        # Demote any other admin accounts (only the canonical Gmail admin)
+        await db.users.update_many(
+            {"role": "admin", "email": {"$ne": target_admin}},
+            {"$set": {"role": "user"}},
+        )
+        existing_admin = await db.users.find_one({"email": target_admin})
+        if not existing_admin and target_pwd:
+            await db.users.insert_one({
+                "user_id": gen_user_id(),
+                "email": target_admin,
+                "name": "Matheus Vittore",
+                "password_hash": hash_password(target_pwd),
+                "role": "admin",
+                "points": 10000,
+                "bio": "Administrador GameScout",
+                "picture": None,
+                "auth_provider": "email",
+                "email_verified": True,
+                "social": {},
+                "prefs": {"platforms": ["pc"], "favorite_game": None, "favorite_game_id": None, "pc_specs": None},
+                "created_at": datetime.now(timezone.utc),
+            })
+            log.info("Admin Gmail seeded: %s", target_admin)
+        else:
+            upd = {"role": "admin", "email_verified": True}
+            if target_pwd:
+                upd["password_hash"] = hash_password(target_pwd)
+            await db.users.update_one({"email": target_admin}, {"$set": upd})
+            log.info("Promoted %s to admin", target_admin)
+
     # Game catalog: import from IGDB on startup, then schedule periodic refresh
     asyncio.create_task(_refresh_games_catalog())
     asyncio.create_task(_periodic_refresh_loop())
 
     # One-time backfill: compute `score` for legacy reviews that don't have it.
     asyncio.create_task(_backfill_review_scores())
+
+    # One-time cleanup: remove TEST_/dev seed data so ranking is clean.
+    asyncio.create_task(_cleanup_test_data())
+
+
+async def _cleanup_test_data():
+    """Delete TEST_-prefixed users, their reviews, friendships, and dev communities
+    so the leaderboard and chat data are clean in production.
+    Idempotent — safe to run on every startup.
+    """
+    try:
+        # Find ephemeral test users: emails starting with TEST_ or matching dev patterns.
+        test_user_cur = db.users.find(
+            {"email": {"$regex": r"^(TEST_|test_|tester|smoke_|qa_)", "$options": "i"}},
+            {"_id": 0, "user_id": 1, "email": 1},
+        )
+        test_user_ids = [u["user_id"] async for u in test_user_cur]
+        if test_user_ids:
+            r = await db.reviews.delete_many({"user_id": {"$in": test_user_ids}})
+            await db.guides.delete_many({"author_id": {"$in": test_user_ids}})
+            await db.help_requests.delete_many({"author_id": {"$in": test_user_ids}})
+            await db.friendships.delete_many({"$or": [{"from_user": {"$in": test_user_ids}}, {"to_user": {"$in": test_user_ids}}]})
+            await db.wishlists.delete_many({"user_id": {"$in": test_user_ids}})
+            await db.messages.delete_many({"sender_id": {"$in": test_user_ids}})
+            await db.users.delete_many({"user_id": {"$in": test_user_ids}})
+            log.info("Cleaned %d test users + %d reviews", len(test_user_ids), r.deleted_count)
+        # Test communities (created by automated test suites)
+        cr = await db.communities.delete_many({"name": {"$regex": r"^(TEST|test |smoke )", "$options": "i"}})
+        if cr.deleted_count:
+            log.info("Cleaned %d test communities", cr.deleted_count)
+    except Exception as e:
+        log.warning("Cleanup failed: %s", e)
 
 
 async def _backfill_review_scores():
@@ -484,33 +646,43 @@ async def shutdown():
 # ---------------------------------------------------------------------------
 @api.post("/auth/register")
 async def register(payload: RegisterIn, response: Response):
-    email = payload.email.lower()
+    email = payload.email.lower().strip()
+    if not is_gmail(email):
+        raise HTTPException(400, "Apenas contas Gmail são permitidas (@gmail.com)")
     if await db.users.find_one({"email": email}):
         raise HTTPException(400, "Email já registado")
     user_id = gen_user_id()
+    is_admin_email = email == os.environ.get("ADMIN_GMAIL", "").lower().strip()
     doc = {
         "user_id": user_id,
         "email": email,
         "name": payload.name.strip(),
         "password_hash": hash_password(payload.password),
-        "role": "user",
-        "points": 0,
+        "role": "admin" if is_admin_email else "user",
+        "points": 10000 if is_admin_email else 0,
         "bio": "",
         "picture": None,
         "auth_provider": "email",
+        "email_verified": False,
         "social": {},
         "prefs": {"platforms": [], "favorite_game": None, "favorite_game_id": None, "pc_specs": None},
         "created_at": datetime.now(timezone.utc),
     }
     await db.users.insert_one(doc)
+    # Send verification code (best effort) — don't gate registration on email delivery
+    await issue_verification_code(user_id, email, doc["name"])
     set_jwt_cookies(response, user_id)
     user = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0})
-    return public_user(user)
+    out = public_user(user)
+    out["needs_verification"] = True
+    return out
 
 
 @api.post("/auth/login")
 async def login(payload: LoginIn, response: Response, request: Request):
-    email = payload.email.lower()
+    email = payload.email.lower().strip()
+    if not is_gmail(email):
+        raise HTTPException(400, "Apenas contas Gmail podem entrar (@gmail.com)")
     ip = request.client.host if request.client else "?"
     ident = f"{ip}:{email}"
     # brute force check
@@ -534,7 +706,12 @@ async def login(payload: LoginIn, response: Response, request: Request):
         raise HTTPException(401, "Email ou password inválidos")
     await db.login_attempts.delete_one({"identifier": ident})
     set_jwt_cookies(response, user["user_id"])
-    return public_user(user)
+    out = public_user(user)
+    if not user.get("email_verified", False):
+        out["needs_verification"] = True
+        # Re-issue a fresh code so the user can complete verification right away
+        await issue_verification_code(user["user_id"], email, user.get("name") or "")
+    return out
 
 
 @api.post("/auth/logout")
@@ -550,7 +727,45 @@ async def logout(response: Response, request: Request):
 
 @api.get("/auth/me")
 async def me(user: dict = Depends(get_current_user)):
-    return public_user(user)
+    out = public_user(user)
+    out["needs_verification"] = (user.get("auth_provider") == "email") and (not user.get("email_verified", False))
+    return out
+
+
+class VerifyEmailIn(BaseModel):
+    code: str = Field(min_length=6, max_length=6)
+
+
+@api.post("/auth/verify-email")
+async def verify_email(payload: VerifyEmailIn, user: dict = Depends(get_current_user)):
+    if user.get("email_verified"):
+        return {"ok": True, "already": True}
+    rec = await db.email_verifications.find_one({"user_id": user["user_id"]}, {"_id": 0})
+    if not rec:
+        raise HTTPException(400, "Sem código pendente. Pede um novo.")
+    if rec.get("attempts", 0) >= 8:
+        raise HTTPException(429, "Demasiadas tentativas. Pede um novo código.")
+    exp = rec.get("expires_at")
+    if isinstance(exp, str):
+        exp = datetime.fromisoformat(exp)
+    if exp and exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    if exp and exp < datetime.now(timezone.utc):
+        raise HTTPException(400, "Código expirado. Pede um novo.")
+    if (payload.code or "").strip() != rec.get("code"):
+        await db.email_verifications.update_one({"user_id": user["user_id"]}, {"$inc": {"attempts": 1}})
+        raise HTTPException(400, "Código incorreto")
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"email_verified": True}})
+    await db.email_verifications.delete_one({"user_id": user["user_id"]})
+    return {"ok": True}
+
+
+@api.post("/auth/resend-code")
+async def resend_code(user: dict = Depends(get_current_user)):
+    if user.get("email_verified"):
+        return {"ok": True, "already": True}
+    await issue_verification_code(user["user_id"], user["email"], user.get("name") or "")
+    return {"ok": True}
 
 
 @api.post("/auth/refresh")
@@ -585,8 +800,11 @@ async def google_session(payload: GoogleSessionIn, response: Response):
     session_token = data.get("session_token")
     if not email or not session_token:
         raise HTTPException(502, "Resposta inválida do Emergent")
+    if not is_gmail(email):
+        raise HTTPException(403, "Apenas contas Gmail são permitidas")
 
     user = await db.users.find_one({"email": email})
+    is_admin_email = email == os.environ.get("ADMIN_GMAIL", "").lower().strip()
     if not user:
         user_id = gen_user_id()
         await db.users.insert_one({
@@ -594,18 +812,26 @@ async def google_session(payload: GoogleSessionIn, response: Response):
             "email": email,
             "name": name,
             "picture": picture,
-            "role": "user",
-            "points": 0,
+            "role": "admin" if is_admin_email else "user",
+            "points": 10000 if is_admin_email else 0,
             "bio": "",
             "auth_provider": "google",
+            "email_verified": True,  # Google has already verified the address
             "social": {},
             "prefs": {"platforms": [], "favorite_game": None, "favorite_game_id": None, "pc_specs": None},
             "created_at": datetime.now(timezone.utc),
         })
         user = await db.users.find_one({"email": email}, {"_id": 0, "password_hash": 0})
     else:
+        upd = {}
         if picture and not user.get("picture"):
-            await db.users.update_one({"email": email}, {"$set": {"picture": picture}})
+            upd["picture"] = picture
+        if not user.get("email_verified"):
+            upd["email_verified"] = True  # via Google
+        if is_admin_email and user.get("role") != "admin":
+            upd["role"] = "admin"
+        if upd:
+            await db.users.update_one({"email": email}, {"$set": upd})
         user.pop("_id", None)
         user.pop("password_hash", None)
 
@@ -631,11 +857,12 @@ async def google_session(payload: GoogleSessionIn, response: Response):
 async def me_full(user: dict = Depends(get_current_user)):
     u = public_user(user)
     u["rank"] = rank_for_points(u.get("points", 0))
+    u["needs_verification"] = (user.get("auth_provider") == "email") and (not user.get("email_verified", False))
     return u
 
 
 @api.patch("/users/me")
-async def update_me(payload: ProfileUpdateIn, user: dict = Depends(get_current_user)):
+async def update_me(payload: ProfileUpdateIn, user: dict = Depends(get_verified_user)):
     update = {}
     if payload.name is not None: update["name"] = payload.name.strip()
     if payload.bio is not None: update["bio"] = payload.bio
@@ -652,7 +879,7 @@ async def update_me(payload: ProfileUpdateIn, user: dict = Depends(get_current_u
 
 
 @api.post("/users/me/avatar")
-async def upload_avatar(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+async def upload_avatar(file: UploadFile = File(...), user: dict = Depends(get_verified_user)):
     """Upload an image as the user's avatar. Stored as data URL in user.picture."""
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(400, "Apenas imagens são permitidas")
@@ -670,7 +897,7 @@ async def upload_avatar(file: UploadFile = File(...), user: dict = Depends(get_c
 
 
 @api.get("/users/search")
-async def search_users(q: str = Query(min_length=2), user: dict = Depends(get_current_user)):
+async def search_users(q: str = Query(min_length=2), user: dict = Depends(get_verified_user)):
     cur = db.users.find(
         {"name": {"$regex": q, "$options": "i"}, "user_id": {"$ne": user["user_id"]}},
         {"_id": 0, "password_hash": 0, "email": 0},
@@ -711,7 +938,7 @@ async def get_my_wishlist(user: dict = Depends(get_current_user)):
 
 
 @api.post("/wishlist/{game_id}")
-async def add_to_wishlist(game_id: str, user: dict = Depends(get_current_user)):
+async def add_to_wishlist(game_id: str, user: dict = Depends(get_verified_user)):
     g = await db.games.find_one({"game_id": game_id}, {"_id": 0, "game_id": 1})
     if not g:
         raise HTTPException(404, "Jogo não encontrado")
@@ -723,7 +950,7 @@ async def add_to_wishlist(game_id: str, user: dict = Depends(get_current_user)):
 
 
 @api.delete("/wishlist/{game_id}")
-async def remove_from_wishlist(game_id: str, user: dict = Depends(get_current_user)):
+async def remove_from_wishlist(game_id: str, user: dict = Depends(get_verified_user)):
     await db.users.update_one(
         {"user_id": user["user_id"]},
         {"$pull": {"wishlist": game_id}},
@@ -748,7 +975,7 @@ async def get_user_wishlist(user_id: str):
 # Discover (recommendations)
 # ---------------------------------------------------------------------------
 @api.get("/discover")
-async def discover(user: dict = Depends(get_current_user)):
+async def discover(user: dict = Depends(get_verified_user)):
     """Recommend games based on user reviews + profile preferences."""
     user_id = user["user_id"]
     prefs = user.get("prefs") or {}
@@ -1023,7 +1250,7 @@ async def create_review(game_id: str, payload: ReviewIn, user: dict = Depends(ge
 
 
 @api.delete("/reviews/{review_id}")
-async def delete_review(review_id: str, user: dict = Depends(get_current_user)):
+async def delete_review(review_id: str, user: dict = Depends(get_verified_user)):
     r = await db.reviews.find_one({"review_id": review_id})
     if not r:
         raise HTTPException(404, "Avaliação não encontrada")
@@ -1034,7 +1261,7 @@ async def delete_review(review_id: str, user: dict = Depends(get_current_user)):
 
 
 @api.patch("/reviews/{review_id}")
-async def update_review(review_id: str, payload: ReviewIn, user: dict = Depends(get_current_user)):
+async def update_review(review_id: str, payload: ReviewIn, user: dict = Depends(get_verified_user)):
     r = await db.reviews.find_one({"review_id": review_id})
     if not r:
         raise HTTPException(404, "Avaliação não encontrada")
@@ -1084,7 +1311,7 @@ async def list_guides(game_id: str):
 
 
 @api.post("/games/{game_id}/guides")
-async def create_guide(game_id: str, payload: GuideIn, user: dict = Depends(get_current_user)):
+async def create_guide(game_id: str, payload: GuideIn, user: dict = Depends(get_verified_user)):
     if user.get("points", 0) < 50:
         raise HTTPException(403, "Precisa do nível Explorador (50 pts) para criar guias")
     g = await db.games.find_one({"game_id": game_id})
@@ -1108,7 +1335,7 @@ async def create_guide(game_id: str, payload: GuideIn, user: dict = Depends(get_
 
 
 @api.delete("/guides/{guide_id}")
-async def delete_guide(guide_id: str, user: dict = Depends(get_current_user)):
+async def delete_guide(guide_id: str, user: dict = Depends(get_verified_user)):
     g = await db.guides.find_one({"guide_id": guide_id})
     if not g:
         raise HTTPException(404, "Guia não encontrado")
@@ -1119,7 +1346,7 @@ async def delete_guide(guide_id: str, user: dict = Depends(get_current_user)):
 
 
 @api.patch("/guides/{guide_id}")
-async def update_guide(guide_id: str, payload: GuideIn, user: dict = Depends(get_current_user)):
+async def update_guide(guide_id: str, payload: GuideIn, user: dict = Depends(get_verified_user)):
     g = await db.guides.find_one({"guide_id": guide_id})
     if not g:
         raise HTTPException(404, "Guia não encontrado")
@@ -1133,7 +1360,7 @@ async def update_guide(guide_id: str, payload: GuideIn, user: dict = Depends(get
 
 
 @api.patch("/help-requests/{help_id}")
-async def update_help(help_id: str, payload: HelpRequestIn, user: dict = Depends(get_current_user)):
+async def update_help(help_id: str, payload: HelpRequestIn, user: dict = Depends(get_verified_user)):
     h = await db.help_requests.find_one({"help_id": help_id})
     if not h:
         raise HTTPException(404, "Pedido não encontrado")
@@ -1147,7 +1374,7 @@ async def update_help(help_id: str, payload: HelpRequestIn, user: dict = Depends
 
 
 @api.delete("/help-requests/{help_id}")
-async def delete_help(help_id: str, user: dict = Depends(get_current_user)):
+async def delete_help(help_id: str, user: dict = Depends(get_verified_user)):
     h = await db.help_requests.find_one({"help_id": help_id})
     if not h:
         raise HTTPException(404, "Pedido não encontrado")
@@ -1158,7 +1385,7 @@ async def delete_help(help_id: str, user: dict = Depends(get_current_user)):
 
 
 @api.patch("/help-requests/{help_id}/replies/{reply_id}")
-async def update_reply(help_id: str, reply_id: str, payload: HelpReplyIn, user: dict = Depends(get_current_user)):
+async def update_reply(help_id: str, reply_id: str, payload: HelpReplyIn, user: dict = Depends(get_verified_user)):
     h = await db.help_requests.find_one({"help_id": help_id, "replies.reply_id": reply_id})
     if not h:
         raise HTTPException(404, "Resposta não encontrada")
@@ -1175,7 +1402,7 @@ async def update_reply(help_id: str, reply_id: str, payload: HelpReplyIn, user: 
 
 
 @api.delete("/help-requests/{help_id}/replies/{reply_id}")
-async def delete_reply(help_id: str, reply_id: str, user: dict = Depends(get_current_user)):
+async def delete_reply(help_id: str, reply_id: str, user: dict = Depends(get_verified_user)):
     h = await db.help_requests.find_one({"help_id": help_id, "replies.reply_id": reply_id})
     if not h:
         raise HTTPException(404, "Resposta não encontrada")
@@ -1209,7 +1436,7 @@ async def list_help(kind: Optional[str] = None, game_id: Optional[str] = None, l
 
 
 @api.post("/help-requests")
-async def create_help(payload: HelpRequestIn, user: dict = Depends(get_current_user)):
+async def create_help(payload: HelpRequestIn, user: dict = Depends(get_verified_user)):
     hid = f"hr_{uuid.uuid4().hex[:12]}"
     doc = {
         "help_id": hid,
@@ -1229,7 +1456,7 @@ async def create_help(payload: HelpRequestIn, user: dict = Depends(get_current_u
 
 
 @api.post("/help-requests/{help_id}/replies")
-async def reply_help(help_id: str, payload: HelpReplyIn, user: dict = Depends(get_current_user)):
+async def reply_help(help_id: str, payload: HelpReplyIn, user: dict = Depends(get_verified_user)):
     h = await db.help_requests.find_one({"help_id": help_id})
     if not h:
         raise HTTPException(404, "Pedido não encontrado")
@@ -1249,7 +1476,7 @@ async def reply_help(help_id: str, payload: HelpReplyIn, user: dict = Depends(ge
 # Friends + Chat (simple)
 # ---------------------------------------------------------------------------
 @api.get("/friends")
-async def list_friends(user: dict = Depends(get_current_user)):
+async def list_friends(user: dict = Depends(get_verified_user)):
     cur = db.friendships.find({"$or": [{"from_user": user["user_id"], "status": "accepted"}, {"to_user": user["user_id"], "status": "accepted"}]}, {"_id": 0})
     friends = []
     async for f in cur:
@@ -1272,7 +1499,7 @@ async def friend_requests(user: dict = Depends(get_current_user)):
 
 
 @api.post("/friends/request/{user_id}")
-async def send_friend_request(user_id: str, user: dict = Depends(get_current_user)):
+async def send_friend_request(user_id: str, user: dict = Depends(get_verified_user)):
     if user_id == user["user_id"]:
         raise HTTPException(400, "Não pode adicionar-se a si mesmo")
     target = await db.users.find_one({"user_id": user_id})
@@ -1294,7 +1521,7 @@ async def send_friend_request(user_id: str, user: dict = Depends(get_current_use
 
 
 @api.post("/friends/accept/{user_id}")
-async def accept_friend(user_id: str, user: dict = Depends(get_current_user)):
+async def accept_friend(user_id: str, user: dict = Depends(get_verified_user)):
     res = await db.friendships.update_one(
         {"from_user": user_id, "to_user": user["user_id"], "status": "pending"},
         {"$set": {"status": "accepted"}},
@@ -1305,7 +1532,7 @@ async def accept_friend(user_id: str, user: dict = Depends(get_current_user)):
 
 
 @api.delete("/friends/{user_id}")
-async def remove_friendship(user_id: str, user: dict = Depends(get_current_user)):
+async def remove_friendship(user_id: str, user: dict = Depends(get_verified_user)):
     """Remove a friendship (accepted) or cancel a pending request, in either direction."""
     res = await db.friendships.delete_one({
         "$or": [
@@ -1346,7 +1573,7 @@ async def _are_friends(a: str, b: str) -> bool:
 
 
 @api.get("/chat/threads")
-async def list_chat_threads(user: dict = Depends(get_current_user)):
+async def list_chat_threads(user: dict = Depends(get_verified_user)):
     """Return DM threads (one per friend with whom we've exchanged at least 1 message,
     plus all accepted friends so the user can start chatting)."""
     me = user["user_id"]
@@ -1405,7 +1632,7 @@ async def get_dm_messages(user_id: str, after: Optional[str] = None, user: dict 
 
 
 @api.post("/chat/dm/{user_id}")
-async def send_dm(user_id: str, payload: MessageIn, user: dict = Depends(get_current_user)):
+async def send_dm(user_id: str, payload: MessageIn, user: dict = Depends(get_verified_user)):
     me = user["user_id"]
     if me == user_id:
         raise HTTPException(400, "Não podes conversar contigo próprio")
@@ -1443,7 +1670,7 @@ async def list_communities(q: Optional[str] = None, user: dict = Depends(get_cur
 
 
 @api.post("/communities")
-async def create_community(payload: CommunityIn, user: dict = Depends(get_current_user)):
+async def create_community(payload: CommunityIn, user: dict = Depends(get_verified_user)):
     cid = f"com_{uuid.uuid4().hex[:10]}"
     doc = {
         "community_id": cid,
@@ -1463,7 +1690,7 @@ async def create_community(payload: CommunityIn, user: dict = Depends(get_curren
 
 
 @api.post("/communities/{community_id}/join")
-async def join_community(community_id: str, user: dict = Depends(get_current_user)):
+async def join_community(community_id: str, user: dict = Depends(get_verified_user)):
     res = await db.communities.update_one(
         {"community_id": community_id},
         {"$addToSet": {"members": user["user_id"]}},
@@ -1477,7 +1704,7 @@ async def join_community(community_id: str, user: dict = Depends(get_current_use
 
 
 @api.delete("/communities/{community_id}/leave")
-async def leave_community(community_id: str, user: dict = Depends(get_current_user)):
+async def leave_community(community_id: str, user: dict = Depends(get_verified_user)):
     res = await db.communities.update_one(
         {"community_id": community_id},
         {"$pull": {"members": user["user_id"]}},
@@ -1502,7 +1729,7 @@ async def get_community(community_id: str, user: dict = Depends(get_current_user
 
 
 @api.get("/communities/{community_id}/messages")
-async def get_community_messages(community_id: str, after: Optional[str] = None, user: dict = Depends(get_current_user)):
+async def get_community_messages(community_id: str, after: Optional[str] = None, user: dict = Depends(get_verified_user)):
     c = await db.communities.find_one({"community_id": community_id}, {"_id": 0, "members": 1})
     if not c:
         raise HTTPException(404, "Comunidade não encontrada")
@@ -1516,7 +1743,7 @@ async def get_community_messages(community_id: str, after: Optional[str] = None,
 
 
 @api.post("/communities/{community_id}/messages")
-async def post_community_message(community_id: str, payload: MessageIn, user: dict = Depends(get_current_user)):
+async def post_community_message(community_id: str, payload: MessageIn, user: dict = Depends(get_verified_user)):
     c = await db.communities.find_one({"community_id": community_id}, {"_id": 0, "members": 1})
     if not c:
         raise HTTPException(404, "Comunidade não encontrada")
@@ -1536,6 +1763,200 @@ async def post_community_message(community_id: str, payload: MessageIn, user: di
     await db.messages.insert_one(msg)
     msg.pop("_id", None)
     return msg
+
+
+@api.delete("/chat/messages/{msg_id}")
+async def delete_dm_message(msg_id: str, user: dict = Depends(get_verified_user)):
+    """Delete a DM message — sender or admin only."""
+    m = await db.messages.find_one({"msg_id": msg_id, "type": "dm"})
+    if not m:
+        raise HTTPException(404, "Mensagem não encontrada")
+    if m["sender_id"] != user["user_id"] and user.get("role") != "admin":
+        raise HTTPException(403, "Sem permissão")
+    await db.messages.delete_one({"msg_id": msg_id})
+    return {"ok": True}
+
+
+@api.delete("/communities/{community_id}/messages/{msg_id}")
+async def delete_community_message(community_id: str, msg_id: str, user: dict = Depends(get_current_user)):
+    """Delete a community message — sender, community owner or admin only."""
+    m = await db.messages.find_one({"msg_id": msg_id, "type": "community", "community_id": community_id})
+    if not m:
+        raise HTTPException(404, "Mensagem não encontrada")
+    c = await db.communities.find_one({"community_id": community_id}, {"_id": 0, "owner_id": 1})
+    is_owner = c and c.get("owner_id") == user["user_id"]
+    if m["sender_id"] != user["user_id"] and not is_owner and user.get("role") != "admin":
+        raise HTTPException(403, "Sem permissão")
+    await db.messages.delete_one({"msg_id": msg_id})
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Admin moderation
+# ---------------------------------------------------------------------------
+def require_admin(user: dict = Depends(get_current_user)) -> dict:
+    if user.get("role") != "admin":
+        raise HTTPException(403, "Apenas administradores")
+    return user
+
+
+class GamePatchIn(BaseModel):
+    title: Optional[str] = None
+    cover: Optional[str] = None
+    description: Optional[str] = None
+    year: Optional[int] = None
+    genres: Optional[List[str]] = None
+    platforms: Optional[List[str]] = None
+    developer: Optional[str] = None
+
+
+class SuspendIn(BaseModel):
+    days: int = Field(default=7, ge=1, le=365)
+    reason: Optional[str] = ""
+
+
+class WarnIn(BaseModel):
+    message: str = Field(min_length=2, max_length=400)
+
+
+@api.get("/admin/users")
+async def admin_list_users(q: Optional[str] = None, _: dict = Depends(require_admin)):
+    flt = {}
+    if q:
+        flt = {"$or": [
+            {"email": {"$regex": q, "$options": "i"}},
+            {"name": {"$regex": q, "$options": "i"}},
+            {"user_id": {"$regex": q, "$options": "i"}},
+        ]}
+    cur = db.users.find(flt, {"_id": 0, "password_hash": 0}).sort("created_at", -1).limit(200)
+    out = []
+    async for u in cur:
+        if isinstance(u.get("created_at"), datetime):
+            u["created_at"] = u["created_at"].isoformat()
+        out.append(u)
+    return out
+
+
+@api.post("/admin/users/{user_id}/suspend")
+async def admin_suspend(user_id: str, payload: SuspendIn, admin: dict = Depends(require_admin)):
+    until = datetime.now(timezone.utc) + timedelta(days=payload.days)
+    res = await db.users.update_one(
+        {"user_id": user_id},
+        {"$set": {
+            "suspended_until": until.isoformat(),
+            "suspended_reason": payload.reason or "",
+            "suspended_by": admin["user_id"],
+        }},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(404, "Utilizador não encontrado")
+    return {"ok": True, "until": until.isoformat()}
+
+
+@api.post("/admin/users/{user_id}/unsuspend")
+async def admin_unsuspend(user_id: str, _: dict = Depends(require_admin)):
+    res = await db.users.update_one(
+        {"user_id": user_id},
+        {"$unset": {"suspended_until": "", "suspended_reason": "", "suspended_by": ""}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(404, "Utilizador não encontrado")
+    return {"ok": True}
+
+
+@api.post("/admin/users/{user_id}/warn")
+async def admin_warn(user_id: str, payload: WarnIn, admin: dict = Depends(require_admin)):
+    target = await db.users.find_one({"user_id": user_id}, {"_id": 0, "user_id": 1})
+    if not target:
+        raise HTTPException(404, "Utilizador não encontrado")
+    warning = {
+        "warning_id": f"warn_{uuid.uuid4().hex[:10]}",
+        "user_id": user_id,
+        "message": payload.message,
+        "by": admin["user_id"],
+        "by_name": admin.get("name"),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.warnings.insert_one(warning)
+    warning.pop("_id", None)
+    return warning
+
+
+@api.get("/admin/warnings")
+async def admin_warnings(user_id: Optional[str] = None, _: dict = Depends(require_admin)):
+    flt = {"user_id": user_id} if user_id else {}
+    cur = db.warnings.find(flt, {"_id": 0}).sort("created_at", -1).limit(200)
+    return [w async for w in cur]
+
+
+@api.get("/users/me/warnings")
+async def my_warnings(user: dict = Depends(get_current_user)):
+    cur = db.warnings.find({"user_id": user["user_id"]}, {"_id": 0}).sort("created_at", -1)
+    return [w async for w in cur]
+
+
+@api.patch("/admin/games/{game_id}")
+async def admin_edit_game(game_id: str, payload: GamePatchIn, _: dict = Depends(require_admin)):
+    update = {k: v for k, v in payload.model_dump().items() if v is not None}
+    if not update:
+        raise HTTPException(400, "Nada para atualizar")
+    res = await db.games.update_one({"game_id": game_id}, {"$set": update})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Jogo não encontrado")
+    return await db.games.find_one({"game_id": game_id}, {"_id": 0})
+
+
+@api.post("/admin/reviews/{review_id}/feature")
+async def admin_feature_review(review_id: str, _: dict = Depends(require_admin)):
+    res = await db.reviews.update_one({"review_id": review_id}, {"$set": {"featured": True, "featured_at": datetime.now(timezone.utc).isoformat()}})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Avaliação não encontrada")
+    return {"ok": True}
+
+
+@api.delete("/admin/reviews/{review_id}/feature")
+async def admin_unfeature_review(review_id: str, _: dict = Depends(require_admin)):
+    res = await db.reviews.update_one({"review_id": review_id}, {"$unset": {"featured": "", "featured_at": ""}})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Avaliação não encontrada")
+    return {"ok": True}
+
+
+@api.post("/admin/guides/{guide_id}/feature")
+async def admin_feature_guide(guide_id: str, _: dict = Depends(require_admin)):
+    res = await db.guides.update_one({"guide_id": guide_id}, {"$set": {"featured": True, "featured_at": datetime.now(timezone.utc).isoformat()}})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Guia não encontrado")
+    return {"ok": True}
+
+
+@api.delete("/admin/guides/{guide_id}/feature")
+async def admin_unfeature_guide(guide_id: str, _: dict = Depends(require_admin)):
+    res = await db.guides.update_one({"guide_id": guide_id}, {"$unset": {"featured": "", "featured_at": ""}})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Guia não encontrado")
+    return {"ok": True}
+
+
+@api.delete("/admin/messages/{msg_id}")
+async def admin_delete_message(msg_id: str, _: dict = Depends(require_admin)):
+    res = await db.messages.delete_one({"msg_id": msg_id})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Mensagem não encontrada")
+    return {"ok": True}
+
+
+@api.get("/admin/stats")
+async def admin_stats(_: dict = Depends(require_admin)):
+    return {
+        "users": await db.users.count_documents({}),
+        "games": await db.games.count_documents({}),
+        "reviews": await db.reviews.count_documents({}),
+        "guides": await db.guides.count_documents({}),
+        "communities": await db.communities.count_documents({}),
+        "messages": await db.messages.count_documents({}),
+        "suspended_users": await db.users.count_documents({"suspended_until": {"$exists": True}}),
+    }
 
 
 # ---------------------------------------------------------------------------

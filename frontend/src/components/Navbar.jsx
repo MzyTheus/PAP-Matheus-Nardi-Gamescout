@@ -1,5 +1,6 @@
 import { Link, NavLink, useNavigate } from "react-router-dom";
 import { Search, Gamepad2, Users, MessageSquareWarning, LogOut, User as UserIcon, Sun, Moon, Menu, Heart } from "lucide-react";
+import { ShieldAlert } from "lucide-react";
 import { useState } from "react";
 import { useAuth } from "../lib/auth-context";
 import { useTheme } from "../lib/use-theme";
@@ -84,6 +85,11 @@ export default function Navbar() {
               <DropdownMenuItem data-testid="menu-edit" onClick={() => nav("/perfil/editar")}>
                 Editar perfil
               </DropdownMenuItem>
+              {user.role === "admin" && (
+                <DropdownMenuItem data-testid="menu-admin" onClick={() => nav("/admin")}>
+                  <ShieldAlert size={14} className="mr-2" /> Administração
+                </DropdownMenuItem>
+              )}
               <DropdownMenuSeparator />
               <DropdownMenuItem data-testid="menu-logout" onClick={async () => { await logout(); nav("/login"); }}>
                 <LogOut size={14} className="mr-2" /> Terminar sessão

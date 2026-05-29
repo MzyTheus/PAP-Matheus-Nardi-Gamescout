@@ -25,6 +25,8 @@ import Wishlist from "@/pages/Wishlist";
 import Chat from "@/pages/Chat";
 import Communities from "@/pages/Communities";
 import CommunityDetail from "@/pages/CommunityDetail";
+import VerifyEmail from "@/pages/VerifyEmail";
+import AdminDashboard from "@/pages/AdminDashboard";
 
 function ShellLayout({ children }) {
   return (
@@ -82,6 +84,8 @@ function AppRouter() {
               <Route path="/chat/:friendId" element={<ProtectedRoute><Chat /></ProtectedRoute>} />
               <Route path="/comunidades" element={<Communities />} />
               <Route path="/comunidades/:communityId" element={<CommunityDetail />} />
+              <Route path="/verificar-email" element={<ProtectedRoute requireVerified={false}><VerifyEmail /></ProtectedRoute>} />
+              <Route path="/admin" element={<ProtectedRoute><AdminDashboard /></ProtectedRoute>} />
               <Route path="*" element={<div className="text-center py-20"><div className="font-heading text-6xl font-black text-primary">404</div><div className="font-mono text-sm text-muted-foreground mt-4">Página não encontrada</div></div>} />
             </Routes>
           </ShellLayout>

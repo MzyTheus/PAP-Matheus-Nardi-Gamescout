@@ -6,7 +6,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { cacheBust } from "@/lib/format";
-import { ArrowLeft, Send, Users, LogOut } from "lucide-react";
+import { ArrowLeft, Send, Users, LogOut, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 export default function CommunityDetail() {
@@ -99,6 +99,14 @@ export default function CommunityDetail() {
     } catch (e) { toast.error(e.response?.data?.detail || "Erro"); }
   };
 
+  const deleteMsg = async (msgId) => {
+    try {
+      await api.delete(`/communities/${communityId}/messages/${msgId}`);
+      setMessages((p) => p.filter((m) => m.msg_id !== msgId));
+      toast.success("Mensagem apagada");
+    } catch (e) { toast.error(e.response?.data?.detail || "Erro"); }
+  };
+
   if (!community) return null;
 
   return (
@@ -128,8 +136,10 @@ export default function CommunityDetail() {
               <div className="text-center text-xs font-mono uppercase tracking-wider text-muted-foreground py-12">Sem mensagens. Sê o primeiro!</div>
             ) : messages.map((m) => {
               const mine = m.sender_id === user?.user_id;
+              const isOwner = community.owner_id === user?.user_id;
+              const canDelete = mine || isOwner || user?.role === "admin";
               return (
-                <div key={m.msg_id} data-testid={`community-msg-${m.msg_id}`} className={`flex gap-2 ${mine ? "justify-end" : "justify-start"}`}>
+                <div key={m.msg_id} data-testid={`community-msg-${m.msg_id}`} className={`flex gap-2 group/cmsg ${mine ? "justify-end" : "justify-start"}`}>
                   {!mine && (
                     <Link to={`/perfil/${m.sender_id}`} className="shrink-0">
                       <Avatar className="h-7 w-7 rounded-sm">
@@ -140,13 +150,23 @@ export default function CommunityDetail() {
                   )}
                   <div className={`max-w-[75%] ${mine ? "items-end" : "items-start"} flex flex-col`}>
                     {!mine && <div className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground mb-0.5">{m.sender_name}</div>}
-                    <div className={`px-3 py-2 text-sm rounded-sm ${mine ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"}`}>
+                    <div className={`relative px-3 py-2 text-sm rounded-sm ${mine ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"}`}>
                       <div className="whitespace-pre-line break-words">{m.content}</div>
                       <div className={`mt-1 font-mono text-[9px] tracking-wider ${mine ? "text-primary-foreground/70" : "text-muted-foreground"}`}>
                         {new Date(m.created_at).toLocaleTimeString("pt-PT", { hour: "2-digit", minute: "2-digit" })}
                       </div>
                     </div>
                   </div>
+                  {canDelete && (
+                    <button
+                      data-testid={`community-msg-delete-${m.msg_id}`}
+                      onClick={() => deleteMsg(m.msg_id)}
+                      title={mine ? "Apagar mensagem" : "Apagar (moderação)"}
+                      className="self-center opacity-0 group-hover/cmsg:opacity-100 transition text-muted-foreground hover:text-destructive p-1 rounded-sm"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  )}
                 </div>
               );
             })}

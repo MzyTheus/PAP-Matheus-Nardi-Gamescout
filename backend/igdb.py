@@ -69,8 +69,17 @@ GENRE_MAP = {
 FIELDS = (
     "fields name, summary, cover.image_id, genres.name, platforms.name, "
     "first_release_date, involved_companies.developer, involved_companies.company.name, "
-    "total_rating, total_rating_count, hypes;"
+    "total_rating, total_rating_count, hypes, category;"
 )
+
+# IGDB category values we accept (0=main game). Excludes DLC(1), expansion(2),
+# bundle(3), standalone_expansion(4), mod(5), episode(6), season(7), remake(8),
+# remaster(9), expanded_game(10), port(11), fork(12), pack(13), update(14).
+MAIN_GAME_CATEGORY = 0
+
+
+def _is_main_game(item: Dict[str, Any]) -> bool:
+    return int(item.get("category", 0) or 0) == MAIN_GAME_CATEGORY
 
 
 def _get_token(client_id: str, client_secret: str) -> str:
@@ -158,63 +167,65 @@ def _normalise(item: Dict[str, Any]) -> Dict[str, Any] | None:
 
 
 def fetch_games(client_id: str, client_secret: str, total: int = 500) -> List[Dict[str, Any]]:
-    """Fetch a wide variety of games from IGDB (multiple buckets)."""
+    """Fetch popular, well-known games from IGDB.
+
+    Filters:
+      - cover != null (we need a cover image)
+      - version_parent = null (not a re-release version)
+      - category = 0 (main games only — no DLC, expansions, bundles, mods, episodes,
+        seasons, remasters, ports, packs)
+      - total_rating_count >= 1000 for general popularity bucket (well-known titles)
+      - franchise searches use a lower floor (>=50) to ensure niche but iconic
+        titles requested by the user (FNAF, Phasmophobia, etc.) make it in.
+    """
     token = _get_token(client_id, client_secret)
+    # NOTE: Do NOT add `category = 0` to the where clause — IGDB excludes any
+    # document where the field is NULL (and many main games have no explicit
+    # category). We filter main-games in code via `_is_main_game()` below.
     base = "where cover != null & version_parent = null"
-    recent_cutoff = int(datetime(2018, 1, 1, tzinfo=timezone.utc).timestamp())
-    new_cutoff = int(datetime(2022, 1, 1, tzinfo=timezone.utc).timestamp())
 
     queries = [
-        # All-time greats (very high quality)
-        f"{FIELDS} {base} & total_rating != null & total_rating_count >= 300; sort total_rating desc; limit 200;",
-        # Popular recent (last few years, well-rated)
-        f"{FIELDS} {base} & first_release_date > {recent_cutoff} & total_rating_count >= 80; sort total_rating desc; limit 200;",
-        # Most hyped recent
-        f"{FIELDS} {base} & first_release_date > {new_cutoff} & hypes != null; sort hypes desc; limit 150;",
-        # Indie gems
-        f"{FIELDS} {base} & genres = (32) & total_rating_count >= 30; sort total_rating desc; limit 150;",
-        # RPG focus
-        f"{FIELDS} {base} & genres = (12) & total_rating_count >= 50; sort total_rating desc; limit 100;",
-        # Adventure focus
-        f"{FIELDS} {base} & genres = (31) & total_rating_count >= 50; sort total_rating desc; limit 100;",
-        # FPS/Shooter
-        f"{FIELDS} {base} & genres = (5) & total_rating_count >= 50; sort total_rating desc; limit 80;",
-        # Strategy
-        f"{FIELDS} {base} & genres = (15) & total_rating_count >= 30; sort total_rating desc; limit 60;",
-        # Fighting
-        f"{FIELDS} {base} & genres = (4) & total_rating_count >= 20; sort total_rating desc; limit 40;",
-        # Sports/Racing
-        f"{FIELDS} {base} & genres = (14,10) & total_rating_count >= 20; sort total_rating desc; limit 50;",
-        # Survival/horror keyword themes (Survival Horror theme = 19)
-        f"{FIELDS} {base} & themes = (19) & total_rating_count >= 5; sort total_rating desc; limit 100;",
-        # Open world theme (38) — Minecraft, Terraria, No Man's Sky, etc
-        f"{FIELDS} {base} & themes = (38) & total_rating_count >= 30; sort total_rating desc; limit 80;",
+        # MOST popular overall (rating count is a proxy for famous/played)
+        f"{FIELDS} {base} & total_rating_count >= 1000; sort total_rating_count desc; limit 500;",
+        # Top rated among famous (≥800 ratings)
+        f"{FIELDS} {base} & total_rating_count >= 800; sort total_rating desc; limit 300;",
+        # Most hyped (modern releases everyone is talking about)
+        f"{FIELDS} {base} & hypes != null; sort hypes desc; limit 200;",
     ]
 
-    # Specific franchise / popular game searches by name
+    # Specific popular franchise / live-service game searches (lower floor so they
+    # always make it in even if rating_count is below the global popularity bar).
     franchise_terms = [
-        "Resident Evil", "Five Nights at Freddy", "Minecraft", "Terraria",
-        "No Man's Sky", "Dead by Daylight", "Outlast", "Amnesia", "Silent Hill",
-        "Dark Souls", "Bloodborne", "Sekiro", "Final Fantasy", "Halo",
-        "Call of Duty", "Battlefield", "Fallout", "Skyrim", "Mass Effect",
+        # User-requested core list
+        "Minecraft", "Terraria", "No Man's Sky", "Dead by Daylight", "Resident Evil",
+        "Grand Theft Auto V", "Fortnite", "Valorant", "Counter-Strike", "League of Legends",
+        "Elden Ring", "Red Dead Redemption", "Cyberpunk 2077", "The Witcher 3", "Roblox",
+        "Five Nights at Freddy", "Call of Duty", "Rainbow Six Siege", "EA SPORTS FC", "FIFA",
+        "Among Us", "Phasmophobia", "The Forest", "Sons of the Forest", "Hollow Knight",
+        "Stardew Valley", "Helldivers", "Baldur's Gate 3",
+        # Other consolidated, evergreen titles
+        "Outlast", "Silent Hill", "Dark Souls", "Bloodborne", "Sekiro",
+        "Halo Infinite", "Battlefield", "Skyrim", "Fallout 4", "Mass Effect",
         "Borderlands", "Assassin's Creed", "Far Cry", "Tomb Raider",
         "Mortal Kombat", "Street Fighter", "Tekken", "Devil May Cry",
-        "Metal Gear", "Bioshock", "Portal", "Half-Life", "Doom",
-        "Subnautica", "Stardew Valley", "Among Us", "Fall Guys",
-        "Phasmophobia", "Lethal Company", "It Takes Two", "Hollow Knight",
+        "Metal Gear Solid", "BioShock", "Portal", "Half-Life", "Doom Eternal",
+        "Subnautica", "Fall Guys", "Lethal Company", "It Takes Two",
         "Cuphead", "Undertale", "Celeste", "Hades", "Slay the Spire",
-        "Dying Light", "Dishonored", "Prey", "Control", "Death Stranding",
-        "Genshin Impact", "Honkai", "Apex Legends", "Overwatch", "Rainbow Six",
-        "Rocket League", "Forza", "Gran Turismo", "F1", "NBA 2K",
-        "Pokémon", "Kirby", "Mario", "Sonic", "Animal Crossing",
-        "Splatoon", "Smash Bros", "Metroid", "Diablo", "Path of Exile",
+        "Dying Light", "Dishonored", "Control", "Death Stranding",
+        "Genshin Impact", "Apex Legends", "Overwatch", "Rocket League",
+        "Forza Horizon", "Gran Turismo", "F1 24", "NBA 2K",
+        "Pokémon", "Mario Kart", "Animal Crossing", "Smash Bros", "Diablo IV",
+        "Palworld", "Marvel Rivals", "Black Myth Wukong", "Ghost of Tsushima",
+        "Spider-Man", "God of War", "Horizon Forbidden West", "Last of Us",
+        "Persona 5", "Final Fantasy", "Monster Hunter", "Sea of Thieves",
+        "Warframe", "Destiny 2", "Path of Exile", "World of Warcraft",
     ]
 
     franchise_queries = [
-        f"{FIELDS} {base} & name ~ *\"{name}\"*; limit 12;"
+        f"{FIELDS} {base} & total_rating_count >= 50 & name ~ *\"{name}\"*; sort total_rating_count desc; limit 8;"
         for name in franchise_terms
     ]
-    # Put franchise searches FIRST so they always make it into the import
+    # Franchises FIRST so the iconic titles always survive the dedupe.
     queries = franchise_queries + queries
 
     seen: set = set()
@@ -228,6 +239,9 @@ def fetch_games(client_id: str, client_secret: str, total: int = 500) -> List[Di
             for item in batch:
                 if item["id"] in seen:
                     continue
+                # Hard-filter: main-game only (defence in depth in case query path differs)
+                if not _is_main_game(item):
+                    continue
                 norm = _normalise(item)
                 if norm:
                     seen.add(item["id"])
@@ -239,7 +253,7 @@ def fetch_games(client_id: str, client_secret: str, total: int = 500) -> List[Di
             log.warning("IGDB query %d failed: %s", i + 1, e)
             continue
 
-    log.info("IGDB: %d unique games normalised", len(out))
+    log.info("IGDB: %d unique main-games normalised", len(out))
     return out[:total]
 
 

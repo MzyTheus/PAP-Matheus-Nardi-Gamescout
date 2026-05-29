@@ -15,15 +15,15 @@ export default function Register() {
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  useEffect(() => { if (user) nav("/", { replace: true }); }, [user, nav]);
+  useEffect(() => { if (user) nav(user.needs_verification ? "/verificar-email" : "/", { replace: true }); }, [user, nav]);
 
   const onSubmit = async (e) => {
     e.preventDefault();
     setSubmitting(true);
     try {
-      await register(name, email, password);
-      toast.success("Conta criada — bem-vindo!");
-      nav("/");
+      const u = await register(name, email, password);
+      toast.success("Conta criada — verifica o teu email");
+      nav(u?.needs_verification === false ? "/" : "/verificar-email");
     } catch (err) {
       toast.error(err.message);
     } finally {
@@ -52,8 +52,9 @@ export default function Register() {
             <Input data-testid="register-name" required minLength={2} value={name} onChange={(e) => setName(e.target.value)} className="h-11 rounded-sm" />
           </div>
           <div className="space-y-1.5">
-            <Label className="font-mono uppercase text-[11px] tracking-wider">Email</Label>
-            <Input data-testid="register-email" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} className="h-11 rounded-sm" />
+            <Label className="font-mono uppercase text-[11px] tracking-wider">Email Gmail</Label>
+            <Input data-testid="register-email" type="email" placeholder="exemplo@gmail.com" required value={email} onChange={(e) => setEmail(e.target.value)} className="h-11 rounded-sm" />
+            <div className="font-mono text-[10px] text-muted-foreground tracking-wider">Apenas contas @gmail.com — receberás um código de verificação por email</div>
           </div>
           <div className="space-y-1.5">
             <Label className="font-mono uppercase text-[11px] tracking-wider">Password (mín. 6)</Label>
