@@ -24,6 +24,20 @@ Plataforma social de jogos com:
 - Frontend: React Router, AuthContext, Tailwind theme (orange/black-white), Unbounded/Manrope/JetBrains Mono fonts, Shadcn UI
 - All MongoDB queries exclude `_id`. Users use UUID `user_id` field.
 
+## Implemented (2026-05-29 — iteração 7)
+- ✅ **Revisão E2E** + correção: WebSocket agora faz `accept()` antes de `close()` para entregar codes 4401/4403 ao cliente
+- ✅ **Reações em mensagens** (DM + comunidade): `POST/GET /api/messages/{msg_id}/reactions` (toggle); UI mostra picker no hover de cada mensagem com palette `👌❤️🤣😊😁👍🔥😢🎮`
+- ✅ **Reações em reviews**: `POST/GET /api/reviews/{review_id}/reactions`; barra de reações por baixo de cada review
+- ✅ **Likes em reviews**: `POST /api/reviews/{review_id}/like` (toggle); botão coração com contagem
+- ✅ **Comentários em reviews**: `GET/POST /api/reviews/{review_id}/comments`, `DELETE /api/reviews/comments/{cid}`; UI colapsável com Input + lista
+- ✅ **Emojis personalizados (admin)**: `GET /api/emojis` retorna `{basic, custom}`; `POST/DELETE /api/admin/emojis` apenas admin; UI no `/admin` para adicionar emoji + nome
+- ✅ **Paginação de mensagens** (`before` cursor): `GET /api/chat/dm/{uid}?limit=50&before=<iso>` e `GET /api/communities/{cid}/messages?limit=50&before=<iso>`; botão "Carregar mensagens anteriores" preserva scroll
+- ✅ **Real-time via WebSocket**: `/api/ws/chat/dm/{friend_id}` e `/api/ws/chat/community/{cid}` — autentica via cookie `access_token`; mensagens enviadas via REST disparam broadcast em `WSManager` para todos os sockets do mesmo `thread_key`. Front-end substituiu polling 4s por hook `useChatSocket` com reconexão exponencial
+- ✅ Indices novos: `message_reactions`, `review_reactions`, `review_likes`, `review_comments`, `custom_emojis`
+- ✅ Testes: **21/21 backend pytest** passaram (iteration7) + regressão das iterações 5/6
+- ⏸️ **Refactor `server.py`** — deferido. Tamanho atual 2360 linhas. Plano para próxima iteração: extrair `auth.py`, `games.py`, `reviews.py`, `chat.py`, `social.py`, `admin.py` para `/app/backend/routers/` + `deps.py` partilhado. Risco alto sem suíte de testes completa — preferimos iterar com features primeiro e refactor isolado depois.
+
+
 ## Implemented (2026-05-29 — iteração 6)
 - ✅ **Auth Gmail-only**: registo e login devolvem 400 para emails que não terminem em `@gmail.com`
 - ✅ **Verificação de email obrigatória via Resend**:

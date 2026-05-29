@@ -2295,6 +2295,9 @@ async def _user_from_request_cookies(websocket: WebSocket) -> Optional[dict]:
 @app.websocket("/api/ws/chat/{kind}/{target_id}")
 async def ws_chat(websocket: WebSocket, kind: str, target_id: str):
     """Real-time chat channel. `kind` is 'dm' or 'community'."""
+    # Always accept first so that close codes (4401/4403/4400) are delivered
+    # to the client as close-frame codes instead of HTTP 403 handshake errors.
+    await websocket.accept()
     user = await _user_from_request_cookies(websocket)
     if not user:
         await websocket.close(code=4401)
@@ -2314,11 +2317,10 @@ async def ws_chat(websocket: WebSocket, kind: str, target_id: str):
         await websocket.close(code=4400)
         return
 
-    await ws_mgr.join(thread_key, websocket)
+    # Already accepted — just register in room
+    ws_mgr.rooms.setdefault(thread_key, set()).add(websocket)
     try:
         while True:
-            # We only push from server-side; clients keep the socket open.
-            # The client can send a ping to keep the connection alive.
             raw = await websocket.receive_text()
             if raw == "ping":
                 await websocket.send_text("pong")
