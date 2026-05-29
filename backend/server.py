@@ -18,7 +18,7 @@ from typing import List, Optional, Literal
 import bcrypt
 import jwt
 import requests
-from fastapi import FastAPI, APIRouter, Depends, HTTPException, Request, Response, UploadFile, File, Query
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, Request, Response, UploadFile, File, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -160,6 +160,24 @@ class HelpRequestIn(BaseModel):
 
 class HelpReplyIn(BaseModel):
     content: str = Field(min_length=2)
+
+
+# Iteração 7: reactions / comments / emojis
+class ReactionIn(BaseModel):
+    emoji: str = Field(min_length=1, max_length=16)
+
+
+class CommentIn(BaseModel):
+    content: str = Field(min_length=1, max_length=600)
+
+
+class CustomEmojiIn(BaseModel):
+    emoji: str = Field(min_length=1, max_length=16)
+    name: Optional[str] = Field(default=None, max_length=40)
+
+
+# Default reaction emoji palette available to all users
+DEFAULT_EMOJIS = ["👌", "❤️", "🤣", "😊", "😁", "👍", "🔥", "😢", "🎮"]
 
 
 # ---------------------------------------------------------------------------
@@ -434,6 +452,14 @@ async def startup():
     await db.communities.create_index("name")
     await db.email_verifications.create_index("user_id", unique=True)
     await db.email_verifications.create_index("expires_at", expireAfterSeconds=0)
+    await db.message_reactions.create_index([("msg_id", 1), ("user_id", 1), ("emoji", 1)], unique=True)
+    await db.message_reactions.create_index("msg_id")
+    await db.review_reactions.create_index([("review_id", 1), ("user_id", 1), ("emoji", 1)], unique=True)
+    await db.review_reactions.create_index("review_id")
+    await db.review_likes.create_index([("review_id", 1), ("user_id", 1)], unique=True)
+    await db.review_comments.create_index("review_id")
+    await db.review_comments.create_index("created_at")
+    await db.custom_emojis.create_index("emoji", unique=True)
 
     # Seed admin (legacy local admin — kept for emergency access via Gmail-only filter,
     # this account will be unable to log in normally so we leave it as DB seed only).
@@ -897,7 +923,7 @@ async def upload_avatar(file: UploadFile = File(...), user: dict = Depends(get_v
 
 
 @api.get("/users/search")
-async def search_users(q: str = Query(min_length=2), user: dict = Depends(get_verified_user)):
+async def search_users(q: str = Query(min_length=2), user: dict = Depends(get_current_user)):
     cur = db.users.find(
         {"name": {"$regex": q, "$options": "i"}, "user_id": {"$ne": user["user_id"]}},
         {"_id": 0, "password_hash": 0, "email": 0},
@@ -975,7 +1001,7 @@ async def get_user_wishlist(user_id: str):
 # Discover (recommendations)
 # ---------------------------------------------------------------------------
 @api.get("/discover")
-async def discover(user: dict = Depends(get_verified_user)):
+async def discover(user: dict = Depends(get_current_user)):
     """Recommend games based on user reviews + profile preferences."""
     user_id = user["user_id"]
     prefs = user.get("prefs") or {}
@@ -1476,7 +1502,7 @@ async def reply_help(help_id: str, payload: HelpReplyIn, user: dict = Depends(ge
 # Friends + Chat (simple)
 # ---------------------------------------------------------------------------
 @api.get("/friends")
-async def list_friends(user: dict = Depends(get_verified_user)):
+async def list_friends(user: dict = Depends(get_current_user)):
     cur = db.friendships.find({"$or": [{"from_user": user["user_id"], "status": "accepted"}, {"to_user": user["user_id"], "status": "accepted"}]}, {"_id": 0})
     friends = []
     async for f in cur:
@@ -1573,7 +1599,7 @@ async def _are_friends(a: str, b: str) -> bool:
 
 
 @api.get("/chat/threads")
-async def list_chat_threads(user: dict = Depends(get_verified_user)):
+async def list_chat_threads(user: dict = Depends(get_current_user)):
     """Return DM threads (one per friend with whom we've exchanged at least 1 message,
     plus all accepted friends so the user can start chatting)."""
     me = user["user_id"]
@@ -1618,17 +1644,30 @@ async def list_chat_threads(user: dict = Depends(get_verified_user)):
 
 
 @api.get("/chat/dm/{user_id}")
-async def get_dm_messages(user_id: str, after: Optional[str] = None, user: dict = Depends(get_current_user)):
+async def get_dm_messages(user_id: str, after: Optional[str] = None, before: Optional[str] = None, limit: int = 50, user: dict = Depends(get_current_user)):
     me = user["user_id"]
     if me == user_id:
         raise HTTPException(400, "Não podes conversar contigo próprio")
     if not await _are_friends(me, user_id):
         raise HTTPException(403, "Só podes conversar com amigos")
     flt = {"thread_key": _dm_key(me, user_id)}
-    if after:
-        flt["created_at"] = {"$gt": after}
-    cur = db.messages.find(flt, {"_id": 0}).sort("created_at", 1).limit(500)
-    return [m async for m in cur]
+    limit = max(1, min(int(limit), 200))
+    if before:
+        flt["created_at"] = {"$lt": before}
+        cur = db.messages.find(flt, {"_id": 0}).sort("created_at", -1).limit(limit)
+        msgs = [m async for m in cur]
+        msgs.reverse()
+    else:
+        if after:
+            flt["created_at"] = {"$gt": after}
+        cur = db.messages.find(flt, {"_id": 0}).sort("created_at", 1).limit(limit)
+        msgs = [m async for m in cur]
+    # Attach reactions
+    msg_ids = [m["msg_id"] for m in msgs]
+    reactions = await _reactions_for_msgs(msg_ids, me)
+    for m in msgs:
+        m["reactions"] = reactions.get(m["msg_id"], [])
+    return msgs
 
 
 @api.post("/chat/dm/{user_id}")
@@ -1650,6 +1689,9 @@ async def send_dm(user_id: str, payload: MessageIn, user: dict = Depends(get_ver
     }
     await db.messages.insert_one(msg)
     msg.pop("_id", None)
+    msg["reactions"] = []
+    # Broadcast to live websockets
+    await ws_mgr.broadcast(msg["thread_key"], {"event": "new_message", "message": msg})
     return msg
 
 
@@ -1729,17 +1771,29 @@ async def get_community(community_id: str, user: dict = Depends(get_current_user
 
 
 @api.get("/communities/{community_id}/messages")
-async def get_community_messages(community_id: str, after: Optional[str] = None, user: dict = Depends(get_verified_user)):
+async def get_community_messages(community_id: str, after: Optional[str] = None, before: Optional[str] = None, limit: int = 50, user: dict = Depends(get_current_user)):
     c = await db.communities.find_one({"community_id": community_id}, {"_id": 0, "members": 1})
     if not c:
         raise HTTPException(404, "Comunidade não encontrada")
     if user["user_id"] not in (c.get("members") or []):
         raise HTTPException(403, "Junta-te à comunidade para ver mensagens")
     flt = {"thread_key": f"com::{community_id}"}
-    if after:
-        flt["created_at"] = {"$gt": after}
-    cur = db.messages.find(flt, {"_id": 0}).sort("created_at", 1).limit(500)
-    return [m async for m in cur]
+    limit = max(1, min(int(limit), 200))
+    if before:
+        flt["created_at"] = {"$lt": before}
+        cur = db.messages.find(flt, {"_id": 0}).sort("created_at", -1).limit(limit)
+        msgs = [m async for m in cur]
+        msgs.reverse()
+    else:
+        if after:
+            flt["created_at"] = {"$gt": after}
+        cur = db.messages.find(flt, {"_id": 0}).sort("created_at", 1).limit(limit)
+        msgs = [m async for m in cur]
+    msg_ids = [m["msg_id"] for m in msgs]
+    reactions = await _reactions_for_msgs(msg_ids, user["user_id"])
+    for m in msgs:
+        m["reactions"] = reactions.get(m["msg_id"], [])
+    return msgs
 
 
 @api.post("/communities/{community_id}/messages")
@@ -1762,6 +1816,8 @@ async def post_community_message(community_id: str, payload: MessageIn, user: di
     }
     await db.messages.insert_one(msg)
     msg.pop("_id", None)
+    msg["reactions"] = []
+    await ws_mgr.broadcast(msg["thread_key"], {"event": "new_message", "message": msg})
     return msg
 
 
@@ -1957,6 +2013,319 @@ async def admin_stats(_: dict = Depends(require_admin)):
         "messages": await db.messages.count_documents({}),
         "suspended_users": await db.users.count_documents({"suspended_until": {"$exists": True}}),
     }
+
+
+# ---------------------------------------------------------------------------
+# Emojis (basic palette + admin custom)
+# ---------------------------------------------------------------------------
+@api.get("/emojis")
+async def list_emojis():
+    cur = db.custom_emojis.find({}, {"_id": 0}).sort("created_at", 1)
+    custom = [c async for c in cur]
+    return {"basic": DEFAULT_EMOJIS, "custom": custom}
+
+
+@api.post("/admin/emojis")
+async def admin_add_emoji(payload: CustomEmojiIn, admin: dict = Depends(require_admin)):
+    e = payload.emoji.strip()
+    if not e:
+        raise HTTPException(400, "Emoji vazio")
+    doc = {
+        "emoji_id": f"em_{uuid.uuid4().hex[:8]}",
+        "emoji": e,
+        "name": (payload.name or e).strip(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_by": admin["user_id"],
+    }
+    try:
+        await db.custom_emojis.insert_one(doc)
+    except Exception:
+        raise HTTPException(400, "Emoji já adicionado")
+    doc.pop("_id", None)
+    return doc
+
+
+@api.delete("/admin/emojis/{emoji_id}")
+async def admin_remove_emoji(emoji_id: str, _: dict = Depends(require_admin)):
+    res = await db.custom_emojis.delete_one({"emoji_id": emoji_id})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Emoji não encontrado")
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Message reactions (DM + community)
+# ---------------------------------------------------------------------------
+async def _reactions_for_msgs(msg_ids: list, viewer_id: Optional[str] = None) -> dict:
+    """Aggregate reactions for a list of msg_ids → { msg_id: [{emoji, count, mine}] }."""
+    if not msg_ids:
+        return {}
+    pipe = [
+        {"$match": {"msg_id": {"$in": msg_ids}}},
+        {"$group": {"_id": {"msg_id": "$msg_id", "emoji": "$emoji"}, "count": {"$sum": 1}, "users": {"$push": "$user_id"}}},
+    ]
+    out: dict = {}
+    async for d in db.message_reactions.aggregate(pipe):
+        mid = d["_id"]["msg_id"]
+        out.setdefault(mid, []).append({
+            "emoji": d["_id"]["emoji"],
+            "count": d["count"],
+            "mine": bool(viewer_id and viewer_id in d.get("users", [])),
+        })
+    for mid in out:
+        out[mid].sort(key=lambda r: -r["count"])
+    return out
+
+
+@api.post("/messages/{msg_id}/reactions")
+async def toggle_msg_reaction(msg_id: str, payload: ReactionIn, user: dict = Depends(get_verified_user)):
+    msg = await db.messages.find_one({"msg_id": msg_id}, {"_id": 0})
+    if not msg:
+        raise HTTPException(404, "Mensagem não encontrada")
+    # ACL: must be participant of the thread
+    me = user["user_id"]
+    if msg.get("type") == "dm":
+        parts = msg.get("thread_key", "").replace("dm::", "").split("::")
+        if me not in parts:
+            raise HTTPException(403, "Sem acesso à conversa")
+    elif msg.get("type") == "community":
+        c = await db.communities.find_one({"community_id": msg.get("community_id")}, {"_id": 0, "members": 1})
+        if not c or me not in (c.get("members") or []):
+            raise HTTPException(403, "Junta-te à comunidade primeiro")
+    existing = await db.message_reactions.find_one({"msg_id": msg_id, "user_id": me, "emoji": payload.emoji})
+    if existing:
+        await db.message_reactions.delete_one({"_id": existing["_id"]})
+        action = "removed"
+    else:
+        await db.message_reactions.insert_one({
+            "msg_id": msg_id,
+            "user_id": me,
+            "emoji": payload.emoji,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        action = "added"
+    reactions = (await _reactions_for_msgs([msg_id], me)).get(msg_id, [])
+    return {"action": action, "reactions": reactions}
+
+
+@api.get("/messages/{msg_id}/reactions")
+async def get_msg_reactions(msg_id: str, user: dict = Depends(get_current_user)):
+    return (await _reactions_for_msgs([msg_id], user["user_id"])).get(msg_id, [])
+
+
+# ---------------------------------------------------------------------------
+# Review reactions, likes, comments
+# ---------------------------------------------------------------------------
+async def _review_reactions_for(review_ids: list, viewer_id: Optional[str] = None) -> dict:
+    if not review_ids:
+        return {}
+    pipe = [
+        {"$match": {"review_id": {"$in": review_ids}}},
+        {"$group": {"_id": {"review_id": "$review_id", "emoji": "$emoji"}, "count": {"$sum": 1}, "users": {"$push": "$user_id"}}},
+    ]
+    out: dict = {}
+    async for d in db.review_reactions.aggregate(pipe):
+        rid = d["_id"]["review_id"]
+        out.setdefault(rid, []).append({
+            "emoji": d["_id"]["emoji"],
+            "count": d["count"],
+            "mine": bool(viewer_id and viewer_id in d.get("users", [])),
+        })
+    for rid in out:
+        out[rid].sort(key=lambda r: -r["count"])
+    return out
+
+
+async def _likes_summary(review_ids: list, viewer_id: Optional[str] = None) -> dict:
+    if not review_ids:
+        return {}
+    out = {}
+    cur = db.review_likes.aggregate([
+        {"$match": {"review_id": {"$in": review_ids}}},
+        {"$group": {"_id": "$review_id", "count": {"$sum": 1}, "users": {"$push": "$user_id"}}},
+    ])
+    async for d in cur:
+        out[d["_id"]] = {"count": d["count"], "mine": bool(viewer_id and viewer_id in d.get("users", []))}
+    return out
+
+
+@api.post("/reviews/{review_id}/reactions")
+async def toggle_review_reaction(review_id: str, payload: ReactionIn, user: dict = Depends(get_verified_user)):
+    r = await db.reviews.find_one({"review_id": review_id}, {"_id": 0, "review_id": 1})
+    if not r:
+        raise HTTPException(404, "Avaliação não encontrada")
+    me = user["user_id"]
+    existing = await db.review_reactions.find_one({"review_id": review_id, "user_id": me, "emoji": payload.emoji})
+    if existing:
+        await db.review_reactions.delete_one({"_id": existing["_id"]})
+        action = "removed"
+    else:
+        await db.review_reactions.insert_one({
+            "review_id": review_id,
+            "user_id": me,
+            "emoji": payload.emoji,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        action = "added"
+    reactions = (await _review_reactions_for([review_id], me)).get(review_id, [])
+    return {"action": action, "reactions": reactions}
+
+
+@api.get("/reviews/{review_id}/reactions")
+async def get_review_reactions(review_id: str, request: Request):
+    viewer = await get_current_user_optional(request)
+    vid = viewer["user_id"] if viewer else None
+    return (await _review_reactions_for([review_id], vid)).get(review_id, [])
+
+
+@api.post("/reviews/{review_id}/like")
+async def toggle_review_like(review_id: str, user: dict = Depends(get_verified_user)):
+    r = await db.reviews.find_one({"review_id": review_id}, {"_id": 0, "review_id": 1})
+    if not r:
+        raise HTTPException(404, "Avaliação não encontrada")
+    me = user["user_id"]
+    existing = await db.review_likes.find_one({"review_id": review_id, "user_id": me})
+    if existing:
+        await db.review_likes.delete_one({"_id": existing["_id"]})
+        action = "unliked"
+    else:
+        await db.review_likes.insert_one({
+            "review_id": review_id,
+            "user_id": me,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        action = "liked"
+    summary = (await _likes_summary([review_id], me)).get(review_id, {"count": 0, "mine": False})
+    return {"action": action, **summary}
+
+
+@api.get("/reviews/{review_id}/comments")
+async def list_review_comments(review_id: str):
+    cur = db.review_comments.find({"review_id": review_id}, {"_id": 0}).sort("created_at", 1)
+    return [c async for c in cur]
+
+
+@api.post("/reviews/{review_id}/comments")
+async def post_review_comment(review_id: str, payload: CommentIn, user: dict = Depends(get_verified_user)):
+    r = await db.reviews.find_one({"review_id": review_id}, {"_id": 0, "review_id": 1})
+    if not r:
+        raise HTTPException(404, "Avaliação não encontrada")
+    doc = {
+        "comment_id": f"cm_{uuid.uuid4().hex[:12]}",
+        "review_id": review_id,
+        "user_id": user["user_id"],
+        "user_name": user.get("name"),
+        "user_picture": user.get("picture"),
+        "content": payload.content.strip(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.review_comments.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.delete("/reviews/comments/{comment_id}")
+async def delete_review_comment(comment_id: str, user: dict = Depends(get_current_user)):
+    c = await db.review_comments.find_one({"comment_id": comment_id})
+    if not c:
+        raise HTTPException(404, "Comentário não encontrado")
+    if c["user_id"] != user["user_id"] and user.get("role") != "admin":
+        raise HTTPException(403, "Sem permissão")
+    await db.review_comments.delete_one({"comment_id": comment_id})
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Real-time WebSocket (chat broadcasts)
+# ---------------------------------------------------------------------------
+class WSManager:
+    """Track active websocket connections per thread_key."""
+    def __init__(self):
+        self.rooms: dict = {}  # thread_key -> set[WebSocket]
+
+    async def join(self, thread_key: str, ws: WebSocket):
+        await ws.accept()
+        self.rooms.setdefault(thread_key, set()).add(ws)
+
+    def leave(self, thread_key: str, ws: WebSocket):
+        room = self.rooms.get(thread_key)
+        if room:
+            room.discard(ws)
+            if not room:
+                self.rooms.pop(thread_key, None)
+
+    async def broadcast(self, thread_key: str, message: dict):
+        room = self.rooms.get(thread_key, set())
+        dead = []
+        for ws in list(room):
+            try:
+                await ws.send_json(message)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            room.discard(ws)
+
+
+ws_mgr = WSManager()
+
+
+async def _user_from_request_cookies(websocket: WebSocket) -> Optional[dict]:
+    """Resolve user from cookies on the WS handshake."""
+    cookies = websocket.cookies or {}
+    # JWT cookie
+    token = cookies.get("access_token")
+    if token:
+        try:
+            payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+            if payload.get("type") == "access":
+                u = await db.users.find_one({"user_id": payload["sub"]}, {"_id": 0, "password_hash": 0})
+                if u:
+                    return u
+        except jwt.PyJWTError:
+            pass
+    # Emergent session token
+    st = cookies.get("session_token")
+    if st:
+        sess = await db.user_sessions.find_one({"session_token": st}, {"_id": 0})
+        if sess:
+            return await db.users.find_one({"user_id": sess["user_id"]}, {"_id": 0, "password_hash": 0})
+    return None
+
+
+@app.websocket("/api/ws/chat/{kind}/{target_id}")
+async def ws_chat(websocket: WebSocket, kind: str, target_id: str):
+    """Real-time chat channel. `kind` is 'dm' or 'community'."""
+    user = await _user_from_request_cookies(websocket)
+    if not user:
+        await websocket.close(code=4401)
+        return
+    if kind == "dm":
+        if not await _are_friends(user["user_id"], target_id):
+            await websocket.close(code=4403)
+            return
+        thread_key = _dm_key(user["user_id"], target_id)
+    elif kind == "community":
+        c = await db.communities.find_one({"community_id": target_id}, {"_id": 0, "members": 1})
+        if not c or user["user_id"] not in (c.get("members") or []):
+            await websocket.close(code=4403)
+            return
+        thread_key = f"com::{target_id}"
+    else:
+        await websocket.close(code=4400)
+        return
+
+    await ws_mgr.join(thread_key, websocket)
+    try:
+        while True:
+            # We only push from server-side; clients keep the socket open.
+            # The client can send a ping to keep the connection alive.
+            raw = await websocket.receive_text()
+            if raw == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        pass
+    finally:
+        ws_mgr.leave(thread_key, websocket)
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,36 @@
+{
+  "summary": "Iteration 7 backend testing — 21/21 tests passed covering emojis (public catalog + admin CRUD), DM/community/review reactions (toggle, ACL, mine flag), review likes (toggle), review comments (public list ASC + verified post + author/admin delete), `before` cursor pagination for DM and community, message `reactions` field hydration, WebSocket /api/ws/chat/dm and /api/ws/chat/community (handshake auth, non-friend/non-member rejection, ping/pong, real-time broadcast on POST), and iter-6 regression (gmail-only register, admin login, /games/top Bayesian).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/ws/chat/dm/{id} and /api/ws/chat/community/{cid}", "issue": "Pre-accept close() in Starlette/FastAPI converts WS close codes 4401/4403 to an HTTP 403 handshake rejection (client sees InvalidStatus 403 instead of close-frame code 4401/4403). Functionally still rejected, but front-end cannot distinguish 'not authenticated' vs 'not authorised'. Fix: call `await websocket.accept()` first, then `await websocket.close(code=4401|4403)`."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_iteration7.py",
+    "/app/test_reports/pytest/iteration7_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Refactor websocket auth rejection to accept-then-close so 4401/4403 codes are delivered to the client.",
+    "Investigate transient 'Cannot use MongoClient after close' errors in backend.err.log — they appeared during prior restart cycles. Backend recovered after `sudo supervisorctl restart backend`. Risk: hot-reload may temporarily leave clients closed if shutdown raced with new request."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 2352 lines — exceeds 700-line guideline; consider splitting into routers (auth, games, reviews, chat, ws, emojis, admin).",
+    "`@app.on_event('startup'/'shutdown')` is deprecated in modern FastAPI; switch to lifespan context manager. The current shutdown closes the global motor client which is correct, but combined with deprecated decorator may misbehave with uvicorn --reload.",
+    "WSManager not inspected for memory leak: confirm that disconnected sockets are removed from rooms (otherwise broadcast lists grow unboundedly).",
+    "Reaction emoji input is not validated against the {basic, custom} catalog — any unicode string up to model max_length is accepted. Recommend validating against catalog or at least enforcing emoji-only content.",
+    "POST /reviews/{id}/like and /reactions return action='liked'/'unliked' / 'added'/'removed' — inconsistent verbs across like vs reaction; standardise."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration7.py (new)",
+    "/app/test_reports/pytest/iteration7_results.xml (new)"
+  ],
+  "success_rate": {"backend": "100% (21/21)", "frontend": "n/a (backend only)"},
+  "test_credentials": "Admin matheusvittore670@gmail.com / admin123 working. Ad-hoc gmail users created per-test with prefix alice_i7_/bob_i7_/... and verified via db.email_verifications code.",
+  "seed_data_creation": "Tests create ephemeral TEST_-prefixed communities, gmail users, reviews/comments. Communities and users persist (Iteration 6 startup cleanup only removes test_/TEST_ users at boot, so they will be removed on next backend start).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "test_iteration7.py covers all iter-7 features end-to-end including WebSocket via the `websockets` Python lib (additional_headers={'Cookie': access_token=...}). WebSocket auth rejection currently surfaces as InvalidStatus(HTTP 403) — test accepts either InvalidStatus OR ConnectionClosed with code 4401/4403 to remain robust. If main agent refactors to accept-then-close, tests still pass. Backend got stuck in a 'MongoClient closed' state at one point; restarting via supervisorctl recovered it. Tests are class-scoped; alice/bob/admin sessions reused across tests.",
+  "rca of the issue": "No blocking issues. Minor observation on WS close-code visibility documented above."
+}

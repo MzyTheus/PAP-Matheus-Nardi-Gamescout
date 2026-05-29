@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { Link, useParams, useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
@@ -8,6 +8,8 @@ import { Button } from "@/components/ui/button";
 import { cacheBust } from "@/lib/format";
 import { ArrowLeft, Send, Users, LogOut, Trash2 } from "lucide-react";
 import { toast } from "sonner";
+import ReactionPicker from "@/components/ReactionPicker";
+import { useChatSocket } from "@/lib/use-chat-socket";
 
 export default function CommunityDetail() {
   const { communityId } = useParams();
@@ -17,8 +19,10 @@ export default function CommunityDetail() {
   const [messages, setMessages] = useState([]);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
-  const lastTsRef = useRef(null);
+  const [hasMore, setHasMore] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const bottomRef = useRef(null);
+  const scrollRef = useRef(null);
 
   const loadCommunity = async () => {
     try {
@@ -33,12 +37,11 @@ export default function CommunityDetail() {
 
   const loadMessages = async () => {
     try {
-      const { data } = await api.get(`/communities/${communityId}/messages`);
-      setMessages(data || []);
-      if (data?.length) lastTsRef.current = data[data.length - 1].created_at;
-    } catch (e) {
-      // 403 if not member — handled by UI
-    }
+      const { data } = await api.get(`/communities/${communityId}/messages`, { params: { limit: 50 } });
+      const msgs = data || [];
+      setMessages(msgs);
+      setHasMore(msgs.length >= 50);
+    } catch (e) { /* 403 if not member — handled by UI */ }
   };
 
   useEffect(() => {
@@ -49,23 +52,38 @@ export default function CommunityDetail() {
     // eslint-disable-next-line
   }, [communityId]);
 
-  // Poll
-  useEffect(() => {
-    if (!community?.is_member) return;
-    const id = setInterval(async () => {
-      try {
-        const params = lastTsRef.current ? { after: lastTsRef.current } : {};
-        const { data } = await api.get(`/communities/${communityId}/messages`, { params });
-        if (data?.length) {
-          setMessages((prev) => [...prev, ...data]);
-          lastTsRef.current = data[data.length - 1].created_at;
-        }
-      } catch (_) {/* silent */}
-    }, 4000);
-    return () => clearInterval(id);
-  }, [community?.is_member, communityId]);
+  // Real-time via WS (replaces polling)
+  const onWsEvent = useCallback((data) => {
+    if (data.event === "new_message" && data.message) {
+      setMessages((p) => p.some((m) => m.msg_id === data.message.msg_id) ? p : [...p, data.message]);
+    }
+  }, []);
+  useChatSocket({ kind: community?.is_member ? "community" : null, targetId: communityId, onMessage: onWsEvent });
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length]);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); return; }
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 200;
+    if (nearBottom) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages.length]);
+
+  const loadOlder = async () => {
+    if (loadingMore || !hasMore || messages.length === 0) return;
+    setLoadingMore(true);
+    const oldest = messages[0].created_at;
+    const el = scrollRef.current;
+    const prevHeight = el ? el.scrollHeight : 0;
+    try {
+      const { data } = await api.get(`/communities/${communityId}/messages`, { params: { before: oldest, limit: 50 } });
+      if (!data || data.length === 0) setHasMore(false);
+      else {
+        setMessages((prev) => [...data, ...prev]);
+        if (data.length < 50) setHasMore(false);
+        setTimeout(() => { if (el) el.scrollTop = el.scrollHeight - prevHeight; }, 0);
+      }
+    } catch (_) {}
+    finally { setLoadingMore(false); }
+  };
 
   const send = async (e) => {
     e.preventDefault();
@@ -74,12 +92,10 @@ export default function CommunityDetail() {
     setSending(true);
     try {
       const { data } = await api.post(`/communities/${communityId}/messages`, { content: txt });
-      setMessages((p) => [...p, data]);
-      lastTsRef.current = data.created_at;
+      setMessages((p) => p.some((m) => m.msg_id === data.msg_id) ? p : [...p, data]);
       setDraft("");
-    } catch (err) {
-      toast.error(err.response?.data?.detail || "Erro");
-    } finally { setSending(false); }
+    } catch (err) { toast.error(err.response?.data?.detail || "Erro"); }
+    finally { setSending(false); }
   };
 
   const join = async () => {
@@ -107,6 +123,13 @@ export default function CommunityDetail() {
     } catch (e) { toast.error(e.response?.data?.detail || "Erro"); }
   };
 
+  const toggleReaction = async (msgId, emoji) => {
+    try {
+      const { data } = await api.post(`/messages/${msgId}/reactions`, { emoji });
+      setMessages((p) => p.map((m) => m.msg_id === msgId ? { ...m, reactions: data.reactions || [] } : m));
+    } catch (e) { toast.error(e.response?.data?.detail || "Erro"); }
+  };
+
   if (!community) return null;
 
   return (
@@ -131,7 +154,14 @@ export default function CommunityDetail() {
         <div className="gs-card p-8 text-center text-sm text-muted-foreground">Junta-te à comunidade para ver e enviar mensagens.</div>
       ) : (
         <section className="gs-card flex flex-col" data-testid="community-chat">
-          <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3 max-h-[60vh] min-h-[300px]">
+          <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-3 max-h-[60vh] min-h-[300px]">
+            {hasMore && messages.length > 0 && (
+              <div className="text-center pb-2">
+                <button data-testid="community-load-older" onClick={loadOlder} disabled={loadingMore} className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground hover:text-primary px-3 py-1 border border-border rounded-sm">
+                  {loadingMore ? "A carregar…" : "Carregar mensagens anteriores"}
+                </button>
+              </div>
+            )}
             {messages.length === 0 ? (
               <div className="text-center text-xs font-mono uppercase tracking-wider text-muted-foreground py-12">Sem mensagens. Sê o primeiro!</div>
             ) : messages.map((m) => {
@@ -156,17 +186,30 @@ export default function CommunityDetail() {
                         {new Date(m.created_at).toLocaleTimeString("pt-PT", { hour: "2-digit", minute: "2-digit" })}
                       </div>
                     </div>
+                    {(m.reactions || []).length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {m.reactions.map((r) => (
+                          <button key={r.emoji} data-testid={`community-reaction-${m.msg_id}-${r.emoji}`} onClick={() => toggleReaction(m.msg_id, r.emoji)} className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-sm border text-xs ${r.mine ? "bg-primary/10 border-primary text-primary" : "border-border"}`}>
+                            <span>{r.emoji}</span>
+                            <span className="font-mono text-[9px]">{r.count}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                  {canDelete && (
-                    <button
-                      data-testid={`community-msg-delete-${m.msg_id}`}
-                      onClick={() => deleteMsg(m.msg_id)}
-                      title={mine ? "Apagar mensagem" : "Apagar (moderação)"}
-                      className="self-center opacity-0 group-hover/cmsg:opacity-100 transition text-muted-foreground hover:text-destructive p-1 rounded-sm"
-                    >
-                      <Trash2 size={13} />
-                    </button>
-                  )}
+                  <div className="flex items-center gap-0.5 self-center">
+                    <ReactionPicker testIdPrefix={`community-react-${m.msg_id}`} onPick={(e) => toggleReaction(m.msg_id, e)} small />
+                    {canDelete && (
+                      <button
+                        data-testid={`community-msg-delete-${m.msg_id}`}
+                        onClick={() => deleteMsg(m.msg_id)}
+                        title={mine ? "Apagar mensagem" : "Apagar (moderação)"}
+                        className="opacity-0 group-hover/cmsg:opacity-100 transition text-muted-foreground hover:text-destructive p-1 rounded-sm"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    )}
+                  </div>
                 </div>
               );
             })}

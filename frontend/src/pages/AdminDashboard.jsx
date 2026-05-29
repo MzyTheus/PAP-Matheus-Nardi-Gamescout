@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
-import { ShieldAlert, Search, Ban, Mail, Trash2, Star, Users, Gamepad2, MessageSquare, FileText } from "lucide-react";
+import { ShieldAlert, Search, Ban, Mail, Trash2, Star, Users, Gamepad2, MessageSquare, FileText, Smile, Plus } from "lucide-react";
 import { toast } from "sonner";
 
 function StatTile({ label, value, icon }) {
@@ -33,10 +33,13 @@ export default function AdminDashboard() {
   const [suspendDialog, setSuspendDialog] = useState(false);
   const [warn, setWarn] = useState({ message: "" });
   const [susp, setSusp] = useState({ days: 7, reason: "" });
+  const [emojis, setEmojis] = useState([]);
+  const [newEmoji, setNewEmoji] = useState({ emoji: "", name: "" });
 
   const load = () => {
     api.get("/admin/stats").then((r) => setStats(r.data)).catch(() => null);
     api.get("/admin/users", { params: q ? { q } : {} }).then((r) => setUsers(r.data || [])).catch(() => null);
+    api.get("/emojis").then((r) => setEmojis(r.data?.custom || [])).catch(() => null);
   };
 
   useEffect(() => { if (user?.role === "admin") load(); /* eslint-disable-next-line */ }, [user, q]);
@@ -76,6 +79,24 @@ export default function AdminDashboard() {
     try {
       await api.post(`/admin/users/${u.user_id}/unsuspend`);
       toast.success("Suspensão removida");
+      load();
+    } catch (e) { toast.error(e.response?.data?.detail || "Erro"); }
+  };
+
+  const addEmoji = async (e) => {
+    e.preventDefault();
+    if (!newEmoji.emoji.trim()) return;
+    try {
+      await api.post("/admin/emojis", { emoji: newEmoji.emoji.trim(), name: newEmoji.name.trim() || newEmoji.emoji.trim() });
+      toast.success("Emoji adicionado");
+      setNewEmoji({ emoji: "", name: "" });
+      load();
+    } catch (err) { toast.error(err.response?.data?.detail || "Erro"); }
+  };
+
+  const removeEmoji = async (id) => {
+    try {
+      await api.delete(`/admin/emojis/${id}`);
       load();
     } catch (e) { toast.error(e.response?.data?.detail || "Erro"); }
   };
@@ -167,6 +188,35 @@ export default function AdminDashboard() {
             </tbody>
           </table>
         </div>
+      </section>
+
+      <section className="space-y-4" data-testid="admin-emojis">
+        <h2 className="font-heading font-bold text-xl uppercase tracking-tight flex items-center gap-2"><Smile size={20} className="text-primary"/> Emojis personalizados</h2>
+        <p className="text-xs text-muted-foreground">Estes emojis ficam disponíveis no picker de reações em reviews e mensagens, para todos os utilizadores.</p>
+        <form onSubmit={addEmoji} className="gs-card p-4 flex flex-wrap items-end gap-3">
+          <div className="space-y-1">
+            <Label className="font-mono uppercase text-[11px] tracking-wider">Emoji</Label>
+            <Input data-testid="admin-emoji-emoji" value={newEmoji.emoji} onChange={(e) => setNewEmoji({ ...newEmoji, emoji: e.target.value })} placeholder="🥳" maxLength={16} className="w-24 text-xl rounded-sm text-center" />
+          </div>
+          <div className="space-y-1 flex-1 min-w-[200px]">
+            <Label className="font-mono uppercase text-[11px] tracking-wider">Nome (opcional)</Label>
+            <Input data-testid="admin-emoji-name" value={newEmoji.name} onChange={(e) => setNewEmoji({ ...newEmoji, name: e.target.value })} placeholder="festa" maxLength={40} className="rounded-sm" />
+          </div>
+          <Button type="submit" data-testid="admin-emoji-add" disabled={!newEmoji.emoji.trim()} className="rounded-sm"><Plus size={14} className="mr-1"/> Adicionar</Button>
+        </form>
+        {emojis.length === 0 ? (
+          <div className="font-mono text-xs uppercase tracking-wider text-muted-foreground">Sem emojis personalizados.</div>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {emojis.map((em) => (
+              <div key={em.emoji_id} data-testid={`admin-emoji-row-${em.emoji_id}`} className="gs-card px-3 py-2 flex items-center gap-2 text-sm">
+                <span className="text-2xl">{em.emoji}</span>
+                <span className="font-mono text-xs text-muted-foreground">{em.name}</span>
+                <button data-testid={`admin-emoji-remove-${em.emoji_id}`} onClick={() => removeEmoji(em.emoji_id)} className="text-muted-foreground hover:text-destructive p-1 ml-1"><Trash2 size={13}/></button>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
 
       <Dialog open={warnDialog} onOpenChange={setWarnDialog}>

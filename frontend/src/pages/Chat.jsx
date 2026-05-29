@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { Link, useParams, useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
@@ -8,6 +8,8 @@ import { Button } from "@/components/ui/button";
 import { cacheBust } from "@/lib/format";
 import { MessageSquare, Send, ArrowLeft, Trash2 } from "lucide-react";
 import { toast } from "sonner";
+import ReactionPicker from "@/components/ReactionPicker";
+import { useChatSocket } from "@/lib/use-chat-socket";
 
 export default function Chat() {
   const { friendId } = useParams();
@@ -18,47 +20,62 @@ export default function Chat() {
   const [friend, setFriend] = useState(null);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const bottomRef = useRef(null);
-  const lastTsRef = useRef(null);
+  const scrollRef = useRef(null);
 
-  // Load thread list
   useEffect(() => {
     if (!user) return;
     api.get("/chat/threads").then((r) => setThreads(r.data || []));
   }, [user, friendId]);
 
-  // Load friend info + messages when a friendId is selected
   useEffect(() => {
-    if (!friendId) { setMessages([]); setFriend(null); lastTsRef.current = null; return; }
+    if (!friendId) { setMessages([]); setFriend(null); setHasMore(true); return; }
     api.get(`/users/${friendId}`).then((r) => setFriend(r.data)).catch(() => setFriend(null));
-    api.get(`/chat/dm/${friendId}`).then((r) => {
-      setMessages(r.data || []);
-      if (r.data?.length) lastTsRef.current = r.data[r.data.length - 1].created_at;
+    api.get(`/chat/dm/${friendId}`, { params: { limit: 50 } }).then((r) => {
+      const msgs = r.data || [];
+      setMessages(msgs);
+      setHasMore(msgs.length >= 50);
     }).catch((e) => {
       toast.error(e.response?.data?.detail || "Não foi possível abrir a conversa");
     });
   }, [friendId]);
 
-  // Poll for new messages every 4s
-  useEffect(() => {
-    if (!friendId) return;
-    const id = setInterval(async () => {
-      try {
-        const params = lastTsRef.current ? { after: lastTsRef.current } : {};
-        const { data } = await api.get(`/chat/dm/${friendId}`, { params });
-        if (data?.length) {
-          setMessages((prev) => [...prev, ...data]);
-          lastTsRef.current = data[data.length - 1].created_at;
-        }
-      } catch (_) {/* silent */}
-    }, 4000);
-    return () => clearInterval(id);
-  }, [friendId]);
+  // Real-time: receive server-pushed messages
+  const onWsEvent = useCallback((data) => {
+    if (data.event === "new_message" && data.message) {
+      setMessages((prev) => prev.some((m) => m.msg_id === data.message.msg_id) ? prev : [...prev, data.message]);
+    }
+  }, []);
+  useChatSocket({ kind: friendId ? "dm" : null, targetId: friendId, onMessage: onWsEvent });
 
-  // Auto-scroll
+  // Auto-scroll on new messages (only if user is near bottom)
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    const el = scrollRef.current;
+    if (!el) { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); return; }
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 200;
+    if (nearBottom) bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages.length]);
+
+  const loadOlder = async () => {
+    if (loadingMore || !hasMore || messages.length === 0) return;
+    setLoadingMore(true);
+    const oldest = messages[0].created_at;
+    const el = scrollRef.current;
+    const prevHeight = el ? el.scrollHeight : 0;
+    try {
+      const { data } = await api.get(`/chat/dm/${friendId}`, { params: { before: oldest, limit: 50 } });
+      if (!data || data.length === 0) { setHasMore(false); }
+      else {
+        setMessages((prev) => [...data, ...prev]);
+        if (data.length < 50) setHasMore(false);
+        // Preserve scroll position
+        setTimeout(() => { if (el) el.scrollTop = el.scrollHeight - prevHeight; }, 0);
+      }
+    } catch (_) {/* silent */}
+    finally { setLoadingMore(false); }
+  };
 
   const sendMessage = async (e) => {
     e.preventDefault();
@@ -67,14 +84,11 @@ export default function Chat() {
     setSending(true);
     try {
       const { data } = await api.post(`/chat/dm/${friendId}`, { content: txt });
-      setMessages((prev) => [...prev, data]);
-      lastTsRef.current = data.created_at;
+      setMessages((prev) => prev.some((m) => m.msg_id === data.msg_id) ? prev : [...prev, data]);
       setDraft("");
     } catch (err) {
       toast.error(err.response?.data?.detail || "Erro ao enviar");
-    } finally {
-      setSending(false);
-    }
+    } finally { setSending(false); }
   };
 
   const deleteMessage = async (msgId) => {
@@ -85,6 +99,13 @@ export default function Chat() {
     } catch (err) {
       toast.error(err.response?.data?.detail || "Erro");
     }
+  };
+
+  const toggleReaction = async (msgId, emoji) => {
+    try {
+      const { data } = await api.post(`/messages/${msgId}/reactions`, { emoji });
+      setMessages((prev) => prev.map((m) => m.msg_id === msgId ? { ...m, reactions: data.reactions || [] } : m));
+    } catch (e) { toast.error(e.response?.data?.detail || "Erro"); }
   };
 
   return (
@@ -153,39 +174,54 @@ export default function Chat() {
                 )}
               </div>
 
-              <div className="flex-1 overflow-y-auto px-4 py-4 space-y-2 max-h-[55vh]">
+              <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-2 max-h-[55vh]">
+                {hasMore && messages.length > 0 && (
+                  <div className="text-center pb-2">
+                    <button data-testid="chat-load-older" onClick={loadOlder} disabled={loadingMore} className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground hover:text-primary px-3 py-1 border border-border rounded-sm">
+                      {loadingMore ? "A carregar…" : "Carregar mensagens anteriores"}
+                    </button>
+                  </div>
+                )}
                 {messages.length === 0 ? (
                   <div className="text-center text-xs font-mono uppercase tracking-wider text-muted-foreground py-12">Sem mensagens. Envia a primeira!</div>
                 ) : messages.map((m) => {
                   const mine = m.sender_id === user?.user_id;
                   const canDelete = mine || user?.role === "admin";
                   return (
-                    <div key={m.msg_id} data-testid={`chat-msg-${m.msg_id}`} className={`flex group/msg ${mine ? "justify-end" : "justify-start"}`}>
-                      {canDelete && mine && (
-                        <button
-                          data-testid={`chat-msg-delete-${m.msg_id}`}
-                          onClick={() => deleteMessage(m.msg_id)}
-                          title="Apagar mensagem"
-                          className="self-center mr-1 opacity-0 group-hover/msg:opacity-100 transition text-muted-foreground hover:text-destructive p-1 rounded-sm"
-                        >
-                          <Trash2 size={13} />
-                        </button>
-                      )}
-                      <div className={`max-w-[78%] px-3 py-2 text-sm rounded-sm ${mine ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"}`}>
-                        <div className="whitespace-pre-line break-words">{m.content}</div>
-                        <div className={`mt-1 font-mono text-[9px] tracking-wider ${mine ? "text-primary-foreground/70" : "text-muted-foreground"}`}>
-                          {new Date(m.created_at).toLocaleTimeString("pt-PT", { hour: "2-digit", minute: "2-digit" })}
+                    <div key={m.msg_id} data-testid={`chat-msg-${m.msg_id}`} className={`flex group/msg ${mine ? "justify-end" : "justify-start"} items-end gap-1`}>
+                      {mine && (
+                        <div className="flex items-center gap-0.5 self-center">
+                          <ReactionPicker testIdPrefix={`chat-react-${m.msg_id}`} onPick={(e) => toggleReaction(m.msg_id, e)} small />
+                          {canDelete && (
+                            <button data-testid={`chat-msg-delete-${m.msg_id}`} onClick={() => deleteMessage(m.msg_id)} title="Apagar" className="opacity-0 group-hover/msg:opacity-100 transition text-muted-foreground hover:text-destructive p-1 rounded-sm"><Trash2 size={13}/></button>
+                          )}
                         </div>
+                      )}
+                      <div className={`max-w-[78%] flex flex-col ${mine ? "items-end" : "items-start"}`}>
+                        <div className={`px-3 py-2 text-sm rounded-sm ${mine ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"}`}>
+                          <div className="whitespace-pre-line break-words">{m.content}</div>
+                          <div className={`mt-1 font-mono text-[9px] tracking-wider ${mine ? "text-primary-foreground/70" : "text-muted-foreground"}`}>
+                            {new Date(m.created_at).toLocaleTimeString("pt-PT", { hour: "2-digit", minute: "2-digit" })}
+                          </div>
+                        </div>
+                        {(m.reactions || []).length > 0 && (
+                          <div className="flex flex-wrap gap-1 mt-1">
+                            {m.reactions.map((r) => (
+                              <button key={r.emoji} data-testid={`chat-reaction-${m.msg_id}-${r.emoji}`} onClick={() => toggleReaction(m.msg_id, r.emoji)} className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-sm border text-xs ${r.mine ? "bg-primary/10 border-primary text-primary" : "border-border"}`}>
+                                <span>{r.emoji}</span>
+                                <span className="font-mono text-[9px]">{r.count}</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </div>
-                      {canDelete && !mine && (
-                        <button
-                          data-testid={`chat-msg-delete-${m.msg_id}`}
-                          onClick={() => deleteMessage(m.msg_id)}
-                          title="Apagar mensagem (admin)"
-                          className="self-center ml-1 opacity-0 group-hover/msg:opacity-100 transition text-muted-foreground hover:text-destructive p-1 rounded-sm"
-                        >
-                          <Trash2 size={13} />
-                        </button>
+                      {!mine && (
+                        <div className="flex items-center gap-0.5 self-center">
+                          <ReactionPicker testIdPrefix={`chat-react-${m.msg_id}`} onPick={(e) => toggleReaction(m.msg_id, e)} small />
+                          {canDelete && (
+                            <button data-testid={`chat-msg-delete-${m.msg_id}`} onClick={() => deleteMessage(m.msg_id)} title="Apagar (admin)" className="opacity-0 group-hover/msg:opacity-100 transition text-muted-foreground hover:text-destructive p-1 rounded-sm"><Trash2 size={13}/></button>
+                          )}
+                        </div>
                       )}
                     </div>
                   );
