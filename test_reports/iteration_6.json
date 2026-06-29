@@ -1,0 +1,32 @@
+{
+  "summary": "Iteration 8 backend testing — 16/16 new tests + 21/21 iter7 regression all passing. Validated: (1) like/reaction verbs now return action='added'/'removed' (legacy 'liked'/'unliked' removed); (2) emoji validation against catalog — default 9 emojis accepted, arbitrary strings (XYZ, ABCD, foo, etc.) rejected with 400 + 'catálogo' message on both /messages/{id}/reactions and /reviews/{id}/reactions; (3) custom emoji round-trip — admin POST /api/admin/emojis makes emoji immediately valid (no restart), DELETE makes it rejected again; (4) lifespan context manager working — backend logs show clean startup/shutdown with no DeprecationWarning, admin promoted to role=admin at boot; (5) refactor to routers/social.py register() pattern keeps all iter7 routes functional (/api/emojis, /api/admin/emojis, /api/messages/{id}/reactions, /api/reviews/{id}/reactions, /api/reviews/{id}/like, /api/reviews/{id}/comments); (6) server.py /api/chat/dm/{uid} still hydrates messages with `reactions` field via _social_helpers['reactions_for_msgs']; (7) Iter5/6/7 regression — Gmail-only register, admin login, /games/top Bayesian, WebSocket DM/community ping-pong + broadcast all green.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_iteration8.py",
+    "/app/backend/tests/test_iteration7.py",
+    "/app/test_reports/pytest/iteration8_results.xml",
+    "/app/test_reports/pytest/iteration7_rerun_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is 2197 lines (down from 2394) — still above the 700-line guideline; continue extracting routers (auth, games, reviews, chat, ws, admin) into separate modules following the same register() pattern that was successfully used for social.py.",
+    "_VALID_EMOJIS set is rebuilt on each admin CRUD via _reload_custom_emojis(); multi-worker uvicorn deployments would have per-worker stale state. For single-worker preview this is fine; if you ever scale workers > 1, push validation to a DB lookup or pub/sub invalidation.",
+    "routers/social.py register() returns coroutine-producing lambdas (e.g. `lambda msg_ids, viewer_id=None: _reactions_for_msgs(db, msg_ids, viewer_id)`); callers must `await` them. Works, but type hints would help future maintainers — consider `Callable[..., Awaitable[dict]]` annotations on the returned dict.",
+    "DEFAULT_EMOJIS list duplicated as both [👌❤️🤣😊😁👍🔥😢🎮] at module scope and seeded into _VALID_EMOJIS; consider a single source of truth (e.g. a frozenset constant)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration8.py (new — 16 tests across 7 classes)",
+    "/app/backend/tests/test_iteration7.py (updated test_toggle_like to expect 'added'/'removed' per the breaking change)"
+  ],
+  "success_rate": {"backend": "100% (37/37 total — 16 iter8 + 21 iter7 regression)", "frontend": "n/a (backend only)"},
+  "test_credentials": "Admin matheusvittore670@gmail.com / admin123 confirmed working. Ad-hoc gmail users created per-test with prefix alice8_/bob8_/i8user_ and verified via db.email_verifications code.",
+  "seed_data_creation": "Ephemeral TEST_-prefixed communities, gmail users, reviews. Custom emoji '🦄' (unicorn) added/removed during round-trip test — cleanup performed inside the test.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "test_iteration8.py covers iter8 deltas. test_iteration7.py was updated (line ~307) to use the new verbs — if main agent splits server.py further, re-run both files. Custom emoji round-trip test cleans up the unicorn emoji it adds, but if it fails mid-test the row stays in db.custom_emojis. Verification: backend.err.log shows no DeprecationWarning lines after the lifespan refactor; supervisor restart-cycle leaves 'Application startup complete.' without warnings. _social_helpers wiring at server.py line ~2168 — if you re-order imports be careful: routers.social.register() must be called AFTER all dependencies (get_current_user, _assert_valid_emoji, _reload_custom_emojis, DEFAULT_EMOJIS) are defined.",
+  "rca of the issue": "No issues — all iteration 8 acceptance criteria verified. Verb standardisation, lifespan migration, refactor and emoji catalog validation are implemented correctly with no regressions."
+}

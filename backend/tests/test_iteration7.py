@@ -304,7 +304,7 @@ class TestReviewReactionsLikesComments:
         r1 = alice.post(f"{API}/reviews/{rid}/like")
         assert r1.status_code == 200
         body1 = r1.json()
-        assert body1["action"] in ("liked", "unliked")
+        assert body1["action"] in ("added", "removed")
         assert "count" in body1 and "mine" in body1
         # Toggle
         r2 = alice.post(f"{API}/reviews/{rid}/like")

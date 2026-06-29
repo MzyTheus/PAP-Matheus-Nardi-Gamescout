@@ -50,7 +50,7 @@ export default function ReviewCard({ review, showGame = false, onChanged }) {
   const toggleLike = async () => {
     try {
       const { data } = await api.post(`/reviews/${review.review_id}/like`);
-      setLikes({ count: data.count, mine: data.action === "liked" });
+      setLikes({ count: data.count, mine: data.action === "added" });
     } catch (e) { toast.error(e.response?.data?.detail || "Faz login para curtir"); }
   };
 

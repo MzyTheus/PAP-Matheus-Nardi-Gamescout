@@ -179,6 +179,24 @@ class CustomEmojiIn(BaseModel):
 # Default reaction emoji palette available to all users
 DEFAULT_EMOJIS = ["👌", "❤️", "🤣", "😊", "😁", "👍", "🔥", "😢", "🎮"]
 
+# In-memory cache of all valid emojis (basic + custom). Populated at startup
+# and updated whenever an admin adds/removes a custom emoji. Used to validate
+# reaction payloads so users can only react with emojis from the catalog.
+_VALID_EMOJIS: set = set(DEFAULT_EMOJIS)
+
+
+async def _reload_custom_emojis():
+    """Refresh `_VALID_EMOJIS` from DB. Called at startup and on admin CRUD."""
+    _VALID_EMOJIS.clear()
+    _VALID_EMOJIS.update(DEFAULT_EMOJIS)
+    async for em in db.custom_emojis.find({}, {"_id": 0, "emoji": 1}):
+        _VALID_EMOJIS.add(em["emoji"])
+
+
+def _assert_valid_emoji(emoji: str):
+    if emoji not in _VALID_EMOJIS:
+        raise HTTPException(400, "Emoji não está no catálogo. Pede ao admin para adicionar.")
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -372,7 +390,21 @@ async def award_points(user_id: str, pts: int):
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
-app = FastAPI(title="GameScout API")
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def lifespan(_app):
+    """Application lifecycle. Body references `_on_startup` / `_on_shutdown`
+    defined further below — Python only resolves these at invocation time."""
+    await _on_startup()
+    try:
+        yield
+    finally:
+        await _on_shutdown()
+
+
+app = FastAPI(title="GameScout API", lifespan=lifespan)
 api = APIRouter(prefix="/api")
 
 
@@ -431,8 +463,7 @@ async def get_friendship_status(viewer_id: str, target_id: str) -> str:
     return "pending_received"
 
 
-@app.on_event("startup")
-async def startup():
+async def _on_startup():
     # Indexes
     await db.users.create_index("email", unique=True)
     await db.users.create_index("user_id", unique=True)
@@ -460,6 +491,8 @@ async def startup():
     await db.review_comments.create_index("review_id")
     await db.review_comments.create_index("created_at")
     await db.custom_emojis.create_index("emoji", unique=True)
+    # Populate emoji catalog cache
+    await _reload_custom_emojis()
 
     # Seed admin (legacy local admin — kept for emergency access via Gmail-only filter,
     # this account will be unable to log in normally so we leave it as DB seed only).
@@ -662,9 +695,12 @@ async def admin_refresh_games(user: dict = Depends(get_current_user)):
     return {"ok": True, "message": "Importação iniciada em background"}
 
 
-@app.on_event("shutdown")
-async def shutdown():
-    client.close()
+async def _on_shutdown():
+    """Graceful shutdown — close MongoDB client."""
+    try:
+        client.close()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -1664,7 +1700,7 @@ async def get_dm_messages(user_id: str, after: Optional[str] = None, before: Opt
         msgs = [m async for m in cur]
     # Attach reactions
     msg_ids = [m["msg_id"] for m in msgs]
-    reactions = await _reactions_for_msgs(msg_ids, me)
+    reactions = await _social_helpers["reactions_for_msgs"](msg_ids, me)
     for m in msgs:
         m["reactions"] = reactions.get(m["msg_id"], [])
     return msgs
@@ -1790,7 +1826,7 @@ async def get_community_messages(community_id: str, after: Optional[str] = None,
         cur = db.messages.find(flt, {"_id": 0}).sort("created_at", 1).limit(limit)
         msgs = [m async for m in cur]
     msg_ids = [m["msg_id"] for m in msgs]
-    reactions = await _reactions_for_msgs(msg_ids, user["user_id"])
+    reactions = await _social_helpers["reactions_for_msgs"](msg_ids, user["user_id"])
     for m in msgs:
         m["reactions"] = reactions.get(m["msg_id"], [])
     return msgs
@@ -2016,223 +2052,16 @@ async def admin_stats(_: dict = Depends(require_admin)):
 
 
 # ---------------------------------------------------------------------------
-# Emojis (basic palette + admin custom)
+# Emojis / reactions / comments / likes — see routers/social.py
+# Registered at bottom of file via routers.social.register(...)
 # ---------------------------------------------------------------------------
-@api.get("/emojis")
-async def list_emojis():
-    cur = db.custom_emojis.find({}, {"_id": 0}).sort("created_at", 1)
-    custom = [c async for c in cur]
-    return {"basic": DEFAULT_EMOJIS, "custom": custom}
-
-
-@api.post("/admin/emojis")
-async def admin_add_emoji(payload: CustomEmojiIn, admin: dict = Depends(require_admin)):
-    e = payload.emoji.strip()
-    if not e:
-        raise HTTPException(400, "Emoji vazio")
-    doc = {
-        "emoji_id": f"em_{uuid.uuid4().hex[:8]}",
-        "emoji": e,
-        "name": (payload.name or e).strip(),
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "created_by": admin["user_id"],
-    }
-    try:
-        await db.custom_emojis.insert_one(doc)
-    except Exception:
-        raise HTTPException(400, "Emoji já adicionado")
-    doc.pop("_id", None)
-    return doc
-
-
-@api.delete("/admin/emojis/{emoji_id}")
-async def admin_remove_emoji(emoji_id: str, _: dict = Depends(require_admin)):
-    res = await db.custom_emojis.delete_one({"emoji_id": emoji_id})
-    if res.deleted_count == 0:
-        raise HTTPException(404, "Emoji não encontrado")
-    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
-# Message reactions (DM + community)
+# Iter7 social endpoints — emojis, reactions, likes, comments
+# Implemented in routers/social.py; registered at the bottom of this file
+# (after all dependencies are defined) via routers.social.register(...).
 # ---------------------------------------------------------------------------
-async def _reactions_for_msgs(msg_ids: list, viewer_id: Optional[str] = None) -> dict:
-    """Aggregate reactions for a list of msg_ids → { msg_id: [{emoji, count, mine}] }."""
-    if not msg_ids:
-        return {}
-    pipe = [
-        {"$match": {"msg_id": {"$in": msg_ids}}},
-        {"$group": {"_id": {"msg_id": "$msg_id", "emoji": "$emoji"}, "count": {"$sum": 1}, "users": {"$push": "$user_id"}}},
-    ]
-    out: dict = {}
-    async for d in db.message_reactions.aggregate(pipe):
-        mid = d["_id"]["msg_id"]
-        out.setdefault(mid, []).append({
-            "emoji": d["_id"]["emoji"],
-            "count": d["count"],
-            "mine": bool(viewer_id and viewer_id in d.get("users", [])),
-        })
-    for mid in out:
-        out[mid].sort(key=lambda r: -r["count"])
-    return out
-
-
-@api.post("/messages/{msg_id}/reactions")
-async def toggle_msg_reaction(msg_id: str, payload: ReactionIn, user: dict = Depends(get_verified_user)):
-    msg = await db.messages.find_one({"msg_id": msg_id}, {"_id": 0})
-    if not msg:
-        raise HTTPException(404, "Mensagem não encontrada")
-    # ACL: must be participant of the thread
-    me = user["user_id"]
-    if msg.get("type") == "dm":
-        parts = msg.get("thread_key", "").replace("dm::", "").split("::")
-        if me not in parts:
-            raise HTTPException(403, "Sem acesso à conversa")
-    elif msg.get("type") == "community":
-        c = await db.communities.find_one({"community_id": msg.get("community_id")}, {"_id": 0, "members": 1})
-        if not c or me not in (c.get("members") or []):
-            raise HTTPException(403, "Junta-te à comunidade primeiro")
-    existing = await db.message_reactions.find_one({"msg_id": msg_id, "user_id": me, "emoji": payload.emoji})
-    if existing:
-        await db.message_reactions.delete_one({"_id": existing["_id"]})
-        action = "removed"
-    else:
-        await db.message_reactions.insert_one({
-            "msg_id": msg_id,
-            "user_id": me,
-            "emoji": payload.emoji,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        })
-        action = "added"
-    reactions = (await _reactions_for_msgs([msg_id], me)).get(msg_id, [])
-    return {"action": action, "reactions": reactions}
-
-
-@api.get("/messages/{msg_id}/reactions")
-async def get_msg_reactions(msg_id: str, user: dict = Depends(get_current_user)):
-    return (await _reactions_for_msgs([msg_id], user["user_id"])).get(msg_id, [])
-
-
-# ---------------------------------------------------------------------------
-# Review reactions, likes, comments
-# ---------------------------------------------------------------------------
-async def _review_reactions_for(review_ids: list, viewer_id: Optional[str] = None) -> dict:
-    if not review_ids:
-        return {}
-    pipe = [
-        {"$match": {"review_id": {"$in": review_ids}}},
-        {"$group": {"_id": {"review_id": "$review_id", "emoji": "$emoji"}, "count": {"$sum": 1}, "users": {"$push": "$user_id"}}},
-    ]
-    out: dict = {}
-    async for d in db.review_reactions.aggregate(pipe):
-        rid = d["_id"]["review_id"]
-        out.setdefault(rid, []).append({
-            "emoji": d["_id"]["emoji"],
-            "count": d["count"],
-            "mine": bool(viewer_id and viewer_id in d.get("users", [])),
-        })
-    for rid in out:
-        out[rid].sort(key=lambda r: -r["count"])
-    return out
-
-
-async def _likes_summary(review_ids: list, viewer_id: Optional[str] = None) -> dict:
-    if not review_ids:
-        return {}
-    out = {}
-    cur = db.review_likes.aggregate([
-        {"$match": {"review_id": {"$in": review_ids}}},
-        {"$group": {"_id": "$review_id", "count": {"$sum": 1}, "users": {"$push": "$user_id"}}},
-    ])
-    async for d in cur:
-        out[d["_id"]] = {"count": d["count"], "mine": bool(viewer_id and viewer_id in d.get("users", []))}
-    return out
-
-
-@api.post("/reviews/{review_id}/reactions")
-async def toggle_review_reaction(review_id: str, payload: ReactionIn, user: dict = Depends(get_verified_user)):
-    r = await db.reviews.find_one({"review_id": review_id}, {"_id": 0, "review_id": 1})
-    if not r:
-        raise HTTPException(404, "Avaliação não encontrada")
-    me = user["user_id"]
-    existing = await db.review_reactions.find_one({"review_id": review_id, "user_id": me, "emoji": payload.emoji})
-    if existing:
-        await db.review_reactions.delete_one({"_id": existing["_id"]})
-        action = "removed"
-    else:
-        await db.review_reactions.insert_one({
-            "review_id": review_id,
-            "user_id": me,
-            "emoji": payload.emoji,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        })
-        action = "added"
-    reactions = (await _review_reactions_for([review_id], me)).get(review_id, [])
-    return {"action": action, "reactions": reactions}
-
-
-@api.get("/reviews/{review_id}/reactions")
-async def get_review_reactions(review_id: str, request: Request):
-    viewer = await get_current_user_optional(request)
-    vid = viewer["user_id"] if viewer else None
-    return (await _review_reactions_for([review_id], vid)).get(review_id, [])
-
-
-@api.post("/reviews/{review_id}/like")
-async def toggle_review_like(review_id: str, user: dict = Depends(get_verified_user)):
-    r = await db.reviews.find_one({"review_id": review_id}, {"_id": 0, "review_id": 1})
-    if not r:
-        raise HTTPException(404, "Avaliação não encontrada")
-    me = user["user_id"]
-    existing = await db.review_likes.find_one({"review_id": review_id, "user_id": me})
-    if existing:
-        await db.review_likes.delete_one({"_id": existing["_id"]})
-        action = "unliked"
-    else:
-        await db.review_likes.insert_one({
-            "review_id": review_id,
-            "user_id": me,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        })
-        action = "liked"
-    summary = (await _likes_summary([review_id], me)).get(review_id, {"count": 0, "mine": False})
-    return {"action": action, **summary}
-
-
-@api.get("/reviews/{review_id}/comments")
-async def list_review_comments(review_id: str):
-    cur = db.review_comments.find({"review_id": review_id}, {"_id": 0}).sort("created_at", 1)
-    return [c async for c in cur]
-
-
-@api.post("/reviews/{review_id}/comments")
-async def post_review_comment(review_id: str, payload: CommentIn, user: dict = Depends(get_verified_user)):
-    r = await db.reviews.find_one({"review_id": review_id}, {"_id": 0, "review_id": 1})
-    if not r:
-        raise HTTPException(404, "Avaliação não encontrada")
-    doc = {
-        "comment_id": f"cm_{uuid.uuid4().hex[:12]}",
-        "review_id": review_id,
-        "user_id": user["user_id"],
-        "user_name": user.get("name"),
-        "user_picture": user.get("picture"),
-        "content": payload.content.strip(),
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    await db.review_comments.insert_one(doc)
-    doc.pop("_id", None)
-    return doc
-
-
-@api.delete("/reviews/comments/{comment_id}")
-async def delete_review_comment(comment_id: str, user: dict = Depends(get_current_user)):
-    c = await db.review_comments.find_one({"comment_id": comment_id})
-    if not c:
-        raise HTTPException(404, "Comentário não encontrado")
-    if c["user_id"] != user["user_id"] and user.get("role") != "admin":
-        raise HTTPException(403, "Sem permissão")
-    await db.review_comments.delete_one({"comment_id": comment_id})
-    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
@@ -2331,8 +2160,23 @@ async def ws_chat(websocket: WebSocket, kind: str, target_id: str):
 
 
 # ---------------------------------------------------------------------------
-# Mount
+# Mount: register modular routers FIRST (they add their routes to `api`)
+# then include the api router in the app.
 # ---------------------------------------------------------------------------
+from routers import social as _social_router
+
+_social_helpers = _social_router.register(
+    api=api,
+    db=db,
+    get_current_user=get_current_user,
+    get_verified_user=get_verified_user,
+    get_current_user_optional=get_current_user_optional,
+    require_admin=require_admin,
+    assert_valid_emoji=_assert_valid_emoji,
+    reload_custom_emojis=_reload_custom_emojis,
+    default_emojis=DEFAULT_EMOJIS,
+)
+
 app.include_router(api)
 
 frontend_url = os.environ.get("FRONTEND_URL", "*")
