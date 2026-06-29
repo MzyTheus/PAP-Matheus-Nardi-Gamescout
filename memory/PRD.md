@@ -24,6 +24,22 @@ Plataforma social de jogos com:
 - Frontend: React Router, AuthContext, Tailwind theme (orange/black-white), Unbounded/Manrope/JetBrains Mono fonts, Shadcn UI
 - All MongoDB queries exclude `_id`. Users use UUID `user_id` field.
 
+## Implemented (2026-06-29 — iteração 8)
+- ✅ **Verbos standardizados**: `POST /api/reviews/{id}/like` agora retorna `action: "added"|"removed"` (era `"liked"|"unliked"`). Front-end (`ReviewCard.jsx`) atualizado para reflectir.
+- ✅ **Lifespan context manager**: substituído `@app.on_event("startup"/"shutdown")` (deprecated) por `@asynccontextmanager async def lifespan(...)` declarado antes do `FastAPI(...)` e passado em construtor. Backend arranca sem `DeprecationWarning`.
+- ✅ **Validação de emoji contra catálogo**:
+  - `_VALID_EMOJIS: set` cache em memória, populado em startup + sempre que admin CRUD
+  - Helper `_assert_valid_emoji()` chamado em ambos os endpoints de reactions (mensagens + reviews)
+  - Emoji fora do catálogo → 400 "Emoji não está no catálogo. Pede ao admin para adicionar."
+  - Adicionar/remover custom emoji refresca o cache imediatamente (sem restart)
+- ✅ **Refactor — routers/social.py**:
+  - Extraídos os endpoints iter7 (`/api/emojis`, `/api/admin/emojis`, `/api/messages/{id}/reactions`, `/api/reviews/{id}/reactions|like|comments`) para `/app/backend/routers/social.py`
+  - Padrão `register(*, api, db, deps...)` evita imports circulares — server.py importa o módulo no FIM e chama `register()` com as dependências
+  - Helpers de agregação (`_reactions_for_msgs`, `_review_reactions_for`, `_likes_summary`) movidos e expostos via dict retornado de `register()`; reutilizados em chat/dm e community message handlers através de `_social_helpers["reactions_for_msgs"]`
+  - **server.py: 2394 → 2197 linhas** (-200 linhas, primeira fatia)
+- ✅ Testes: **37/37 backend pytest** (16 iter8 novos + 21 iter7 regressão) + Iter5/6 regression all green
+
+
 ## Implemented (2026-05-29 — iteração 7)
 - ✅ **Revisão E2E** + correção: WebSocket agora faz `accept()` antes de `close()` para entregar codes 4401/4403 ao cliente
 - ✅ **Reações em mensagens** (DM + comunidade): `POST/GET /api/messages/{msg_id}/reactions` (toggle); UI mostra picker no hover de cada mensagem com palette `👌❤️🤣😊😁👍🔥😢🎮`
