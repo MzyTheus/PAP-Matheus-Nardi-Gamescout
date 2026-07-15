@@ -57,7 +57,7 @@
   },
     "overrides": {
     "ajv": "^8.17.1"
-  }
+  },
   "scripts": {
     "start": "craco start",
     "build": "craco build",
