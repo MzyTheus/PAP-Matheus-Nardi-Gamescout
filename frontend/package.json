@@ -56,16 +56,15 @@
     "zod": "^3.24.4"
   },
   "overrides": {
-    "schema-utils": {
-      "ajv-keywords": {
-        "ajv": "^8.17.1"
-      }
-    },
-    "terser-webpack-plugin": {
-      "ajv-keywords": {
-        "ajv": "^8.17.1"
-      }
-    }
+    "ajv": "^8.17.1",
+    "ajv-keywords": "^5.1.0"
+  },
+  "resolutions": {
+    "ajv": "^8.17.1",
+    "ajv-keywords": "^5.1.0"
+  },
+  "engines": {
+    "node": "20.x"
   },
   "scripts": {
     "start": "craco start",
