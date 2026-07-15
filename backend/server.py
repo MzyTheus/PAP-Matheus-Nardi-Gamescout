@@ -2186,7 +2186,7 @@ allowed = [u.strip() for u in frontend_url.split(",") if u.strip()] if frontend_
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed,
-    allow_origin_regex=r"https?://([a-z0-9-]+\.)*emergentagent\.com$",
+    allow_origin_regex=r"https?://([a-z0-9-]+\.)*(vercel\.app|emergentagent\.com)$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
