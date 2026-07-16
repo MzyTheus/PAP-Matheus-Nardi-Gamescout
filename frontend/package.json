@@ -42,7 +42,7 @@
     "lucide-react": "^0.507.0",
     "next-themes": "^0.4.6",
     "react": "^19.0.0",
-    "react-day-picker": "8.10.1",
+    "react-day-picker": "9.0.0",
     "react-dom": "^19.0.0",
     "react-hook-form": "^7.56.2",
     "react-resizable-panels": "^3.0.1",
@@ -55,16 +55,8 @@
     "vaul": "^1.1.2",
     "zod": "^3.24.4"
   },
-  "overrides": {
-    "ajv": "^8.17.1",
-    "ajv-keywords": "^5.1.0"
-  },
-  "resolutions": {
-    "ajv": "^8.17.1",
-    "ajv-keywords": "^5.1.0"
-  },
   "engines": {
-    "node": "20.x"
+    "node": "24.x"
   },
   "scripts": {
     "start": "craco start",
