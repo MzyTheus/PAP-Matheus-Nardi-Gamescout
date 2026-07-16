@@ -2,9 +2,7 @@ import axios from "axios";
 
 // Prefer same-origin to avoid cross-origin cookie issues; fall back to env var.
 const ENV_URL = process.env.REACT_APP_BACKEND_URL;
-const BACKEND_URL = (typeof window !== "undefined" && window.location && window.location.origin)
-  ? window.location.origin
-  : ENV_URL;
+const BACKEND_URL = ENV_URL || (typeof window !== "undefined" && window.location && window.location.origin);
 export const API = `${BACKEND_URL}/api`;
 
 export const api = axios.create({
