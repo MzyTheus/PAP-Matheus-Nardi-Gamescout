@@ -25,13 +25,11 @@ export default function Navbar() {
     <header className="sticky top-0 z-40 border-b border-border bg-background/85 backdrop-blur-md">
       <div className="mx-auto max-w-7xl px-6 lg:px-10 h-16 flex items-center gap-6">
         <Link to="/" data-testid="navbar-logo" className="flex items-center gap-2 group">
-          <span className="grid place-items-center w-9 h-9 bg-primary text-primary-foreground rounded-sm">
-            <Gamepad2 size={18} strokeWidth={2.5} />
-          </span>
-          <span className="font-heading font-black text-lg tracking-tight uppercase hidden sm:block">
-            Game<span className="text-primary">Scout</span>
-          </span>
-        </Link>
+  <img src="/logo-icon.png" alt="GameScout" className="w-9 h-9 object-contain" />
+  <span className="font-heading font-black text-lg tracking-tight uppercase hidden sm:block">
+    Game<span className="text-primary">Scout</span>
+  </span>
+</Link>
 
         <form onSubmit={submitSearch} className="flex-1 max-w-xl relative">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
