@@ -44,7 +44,7 @@ function ShellLayout({ children }) {
             </div>
           </div>
           <div className="font-mono text-[11px] text-muted-foreground tracking-wider uppercase">
-            © {new Date().getFullYear()} GameScout · Feito com laranja
+            © {new Date().getFullYear()} GameScout · Feito por Matheus Nardi
           </div>
         </div>
       </footer>
