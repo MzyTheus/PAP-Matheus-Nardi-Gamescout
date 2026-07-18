@@ -1,5 +1,5 @@
 import { Link, NavLink, useNavigate } from "react-router-dom";
-import { Search, Gamepad2, Users, MessageSquareWarning, LogOut, User as UserIcon, Sun, Moon, Menu, Heart } from "lucide-react";
+import { Search, Users, MessageSquareWarning, LogOut, User as UserIcon, Sun, Moon, Menu, Heart } from "lucide-react";
 import { ShieldAlert } from "lucide-react";
 import { useState } from "react";
 import { useAuth } from "../lib/auth-context";
