@@ -54,7 +54,6 @@ function ShellLayout({ children }) {
 
 function AppRouter() {
   const location = useLocation();
-  // CRITICAL: Detect Emergent OAuth callback synchronously during render
   if (location.hash?.includes("session_id=")) {
     return <AuthCallback />;
   }
